@@ -13,8 +13,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir kaggle
 
-COPY . .
-
 RUN mkdir /root/.kaggle
 
 RUN --mount=type=secret,id=kkey,target=/root/.kaggle/kaggle.json \
@@ -27,6 +25,6 @@ RUN --mount=type=secret,id=kkey,target=/root/.kaggle/kaggle.json \
     tar -xvzf /kaggle/input/stockfish/other/binary/1/*.tar.gz -C /kaggle/input/stockfish/other/binary/1/ && \
     rm -f /kaggle/input/stockfish/other/binary/1/*.tar.gz
 
-EXPOSE 8888
+COPY . .
 
-CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+CMD ["jupyter", "nbconvert", "--to", "notebook", "--inplace", "--execute", "--debug", "train.ipynb"]
