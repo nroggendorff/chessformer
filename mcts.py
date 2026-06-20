@@ -87,11 +87,21 @@ def batched_mcts_sim(roots, boards, model, device, cpuct=1.5, add_noise=False):
             eval_legal_moves.append(node.legal_moves)
 
     if eval_indices:
+        num_eval = len(eval_indices)
+        pad_size = 1 if num_eval == 0 else 2 ** (num_eval - 1).bit_length()
+
         b_tokens = torch.tensor(eval_tokens, dtype=torch.long, device=device)
-        b_actions_cpu = torch.zeros(
-            (len(eval_indices), MAX_LEGAL_MOVES), dtype=torch.long
-        )
-        mask_cpu = torch.zeros((len(eval_indices), MAX_LEGAL_MOVES), dtype=torch.bool)
+
+        if num_eval < pad_size:
+            pad_tokens = torch.zeros(
+                (pad_size - num_eval, b_tokens.shape[1]),
+                dtype=torch.long,
+                device=device,
+            )
+            b_tokens = torch.cat([b_tokens, pad_tokens], dim=0)
+
+        b_actions_cpu = torch.zeros((pad_size, MAX_LEGAL_MOVES), dtype=torch.long)
+        mask_cpu = torch.zeros((pad_size, MAX_LEGAL_MOVES), dtype=torch.bool)
 
         for idx, original_i in enumerate(eval_indices):
             node = search_paths[original_i][-1]
@@ -103,8 +113,16 @@ def batched_mcts_sim(roots, boards, model, device, cpuct=1.5, add_noise=False):
             b_actions_cpu[idx, :n] = node.action_ids
             mask_cpu[idx, :n] = True
 
-        logits, val_preds = model(b_tokens, b_actions_cpu.to(device, non_blocking=True))
-        logits = logits.masked_fill(~mask_cpu.to(device, non_blocking=True), -1e4)
+        b_actions = b_actions_cpu.to(device, non_blocking=True)
+        mask_device = mask_cpu.to(device, non_blocking=True)
+
+        logits, val_preds = model(b_tokens, b_actions)
+
+        logits = logits[:num_eval]
+        val_preds = val_preds[:num_eval]
+        mask_device = mask_device[:num_eval]
+
+        logits = logits.masked_fill(~mask_device, -1e4)
         probs, val_preds = torch.softmax(logits, dim=-1).cpu(), val_preds.cpu().tolist()
 
         for idx, original_i in enumerate(eval_indices):
