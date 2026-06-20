@@ -1,26 +1,9 @@
 import chess
 
-PROMO_TO_ID = {None: 0, chess.QUEEN: 1, chess.ROOK: 2, chess.BISHOP: 3, chess.KNIGHT: 4}
-ID_TO_PROMO = {v: k for k, v in PROMO_TO_ID.items()}
-ACTION_SIZE = 64 * 64 * 5
-MAX_LEGAL_MOVES = 218
-
 TOKEN_EMPTY = 0
 VOCAB_SIZE = 40
 SEQ_LEN = 67
-
-
-def move_to_index(move):
-    return (move.from_square * 64 + move.to_square) * 5 + PROMO_TO_ID.get(
-        move.promotion, 0
-    )
-
-
-def index_to_move(idx):
-    promo = ID_TO_PROMO[idx % 5]
-    idx //= 5
-    return chess.Move(idx // 64, idx % 64, promotion=promo)
-
+BOARD_SQUARES = 64
 
 PIECE_BBS = (
     (chess.PAWN, "pawns"),
@@ -58,3 +41,13 @@ def board_to_tokens(board):
         ]
     )
     return tokens
+
+
+def legal_moves_by_square_pair(board):
+    moves = {}
+    for move in board.legal_moves:
+        if move.promotion in (None, chess.QUEEN):
+            moves[(move.from_square, move.to_square)] = move
+        else:
+            moves.setdefault((move.from_square, move.to_square), move)
+    return moves

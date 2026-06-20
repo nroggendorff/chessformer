@@ -3,30 +3,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from encoding import MAX_LEGAL_MOVES
-
 
 def train_batch(model, opt, scaler, samples, device):
     model.train()
-    batch_size = len(samples)
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
-
-    action_ids_np = np.zeros((batch_size, MAX_LEGAL_MOVES), dtype=np.int64)
-    target_policy_np = np.zeros((batch_size, MAX_LEGAL_MOVES), dtype=np.float32)
-    mask_np = np.zeros((batch_size, MAX_LEGAL_MOVES), dtype=bool)
-
-    for i, (_, a_ids, probs, _) in enumerate(samples):
-        m = len(a_ids)
-        action_ids_np[i, :m] = a_ids
-        target_policy_np[i, :m] = probs
-        mask_np[i, :m] = True
-
-    action_ids = torch.from_numpy(action_ids_np).to(device)
-    target_policy = torch.from_numpy(target_policy_np).to(device)
-    mask = torch.from_numpy(mask_np).to(device)
+    target_policy = torch.from_numpy(np.stack([s[1] for s in samples])).to(device)
     target_values = torch.tensor(
-        [s[3] for s in samples], dtype=torch.float32, device=device
+        [s[2] for s in samples], dtype=torch.float32, device=device
     )
 
     opt.zero_grad(set_to_none=True)
@@ -34,10 +18,11 @@ def train_batch(model, opt, scaler, samples, device):
         device_type=device.type,
         dtype=torch.float16 if device.type == "cuda" else torch.bfloat16,
     ):
-        logits, value_pred = model(boards, action_ids)
-        logits = logits.masked_fill(~mask, -1e4)
+        logits, value_pred = model(boards)
+        logits_flat = logits.view(logits.size(0), -1)
+        target_flat = target_policy.view(target_policy.size(0), -1)
         policy_loss = (
-            -(target_policy * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+            -(target_flat * F.log_softmax(logits_flat, dim=-1)).sum(dim=-1).mean()
         )
         value_loss = F.mse_loss(value_pred, target_values)
         loss = policy_loss + 0.5 * value_loss

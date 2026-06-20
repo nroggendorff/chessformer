@@ -9,7 +9,7 @@ import chess.engine
 import numpy as np
 from tqdm import tqdm
 
-from encoding import board_to_tokens, move_to_index
+from encoding import board_to_tokens
 
 
 def generate_game(engine, max_moves=60, depth=3):
@@ -21,34 +21,36 @@ def generate_game(engine, max_moves=60, depth=3):
         infos = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=4)
         if not isinstance(infos, list):
             infos = [infos]
-        legal_moves = list(board.legal_moves)
-        if not infos or not legal_moves:
+        if not infos or not list(board.legal_moves):
             break
 
-        move_index = {move: idx for idx, move in enumerate(legal_moves)}
-        action_ids = np.array([move_to_index(m) for m in legal_moves], dtype=np.int16)
-        probs = np.zeros(len(legal_moves), dtype=np.float32)
-
+        scores = {}
         for info in infos:
             if "pv" in info and len(info["pv"]) > 0:
-                idx = move_index.get(info["pv"][0])
-                if idx is not None:
-                    sc = info["score"].pov(board.turn).score(mate_score=10000)
-                    probs[idx] = math.exp(max(min(sc, 1000), -1000) / 100.0)
+                move = info["pv"][0]
+                sc = info["score"].pov(board.turn).score(mate_score=10000)
+                scores[move] = math.exp(max(min(sc, 1000), -1000) / 100.0)
 
-        probs = (
-            probs / probs.sum()
-            if probs.sum() > 0
-            else np.ones(len(legal_moves), dtype=np.float32) / len(legal_moves)
-        )
+        policy_grid = np.zeros((64, 64), dtype=np.float32)
+        if scores:
+            total = sum(scores.values())
+            for move, sc in scores.items():
+                policy_grid[move.from_square, move.to_square] = sc / total
+        else:
+            legal_moves = list(board.legal_moves)
+            uniform = 1.0 / len(legal_moves)
+            for move in legal_moves:
+                policy_grid[move.from_square, move.to_square] = uniform
+
         value = math.tanh(infos[0]["score"].white().score(mate_score=10000) / 400.0)
         samples.append(
-            (np.array(board_to_tokens(board), dtype=np.uint8), action_ids, probs, value)
+            (np.array(board_to_tokens(board), dtype=np.uint8), policy_grid, value)
         )
+
         board.push(
-            legal_moves[
-                random.choices(range(len(action_ids)), weights=probs.tolist(), k=1)[0]
-            ]
+            random.choices(list(scores.keys()), weights=list(scores.values()), k=1)[0]
+            if scores
+            else random.choice(list(board.legal_moves))
         )
 
     return samples
