@@ -3,17 +3,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from encoding import MAX_LEGAL_MOVES
+
 
 def train_batch(model, opt, scaler, samples, device):
     model.train()
     batch_size = len(samples)
-    max_moves = max(len(s[1]) for s in samples)
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
 
-    action_ids_np = np.zeros((batch_size, max_moves), dtype=np.int64)
-    target_policy_np = np.zeros((batch_size, max_moves), dtype=np.float32)
-    mask_np = np.zeros((batch_size, max_moves), dtype=bool)
+    action_ids_np = np.zeros((batch_size, MAX_LEGAL_MOVES), dtype=np.int64)
+    target_policy_np = np.zeros((batch_size, MAX_LEGAL_MOVES), dtype=np.float32)
+    mask_np = np.zeros((batch_size, MAX_LEGAL_MOVES), dtype=bool)
 
     for i, (_, a_ids, probs, _) in enumerate(samples):
         m = len(a_ids)

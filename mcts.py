@@ -5,7 +5,7 @@ import chess
 import numpy as np
 import torch
 
-from encoding import board_to_tokens, move_to_index
+from encoding import MAX_LEGAL_MOVES, board_to_tokens, move_to_index
 
 
 class MCTSNode:
@@ -88,8 +88,10 @@ def batched_mcts_sim(roots, boards, model, device, cpuct=1.5, add_noise=False):
 
     if eval_indices:
         b_tokens = torch.tensor(eval_tokens, dtype=torch.long, device=device)
-        max_moves = max(len(mvs) for mvs in eval_legal_moves)
-        b_actions_cpu = torch.zeros((len(eval_indices), max_moves), dtype=torch.long)
+        b_actions_cpu = torch.zeros(
+            (len(eval_indices), MAX_LEGAL_MOVES), dtype=torch.long
+        )
+        mask_cpu = torch.zeros((len(eval_indices), MAX_LEGAL_MOVES), dtype=torch.bool)
 
         for idx, original_i in enumerate(eval_indices):
             node = search_paths[original_i][-1]
@@ -97,9 +99,12 @@ def batched_mcts_sim(roots, boards, model, device, cpuct=1.5, add_noise=False):
                 node.action_ids = torch.tensor(
                     [move_to_index(m) for m in eval_legal_moves[idx]], dtype=torch.long
                 )
-            b_actions_cpu[idx, : len(node.action_ids)] = node.action_ids
+            n = len(node.action_ids)
+            b_actions_cpu[idx, :n] = node.action_ids
+            mask_cpu[idx, :n] = True
 
         logits, val_preds = model(b_tokens, b_actions_cpu.to(device, non_blocking=True))
+        logits = logits.masked_fill(~mask_cpu.to(device, non_blocking=True), -1e4)
         probs, val_preds = torch.softmax(logits, dim=-1).cpu(), val_preds.cpu().tolist()
 
         for idx, original_i in enumerate(eval_indices):
@@ -154,8 +159,17 @@ def root_policy_from_visits(root, temperature=1.0):
     return legal_moves, root.action_ids, probs
 
 
+def root_converged(root, min_visit_share=0.95, min_visits=8):
+    if root.visit_count < min_visits or not root.children:
+        return False
+    return (
+        max(c.visit_count for c in root.children.values()) / root.visit_count
+        >= min_visit_share
+    )
+
+
 def play_games_batched(
-    model, device, num_games=128, sims=100, max_moves=120, sample_moves=15
+    model, device, num_games=128, sims=40, max_moves=120, sample_moves=15
 ):
     model.eval()
     boards = [chess.Board() for _ in range(num_games)]
@@ -172,6 +186,8 @@ def play_games_batched(
         batched_mcts_sim(roots, active_boards, model, device, add_noise=True)
 
         for _ in range(sims - 1):
+            if all(root_converged(r) for r in roots):
+                break
             batched_mcts_sim(roots, active_boards, model, device, add_noise=False)
 
         for idx, original_i in enumerate(active_indices):

@@ -11,9 +11,9 @@ def run_pretraining(
     replay,
     device,
     stockfish_path,
-    pretrain_games=5000,
+    pretrain_games=15000,
     batch_size=512,
-    steps=4000,
+    steps=12000,
 ):
     replay.extend_pretrain(generate_pretrain_data(stockfish_path, pretrain_games))
     print(f"Generated {len(replay.pretrain_buf)} pretraining positions.")

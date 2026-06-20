@@ -3,6 +3,7 @@ import chess
 PROMO_TO_ID = {None: 0, chess.QUEEN: 1, chess.ROOK: 2, chess.BISHOP: 3, chess.KNIGHT: 4}
 ID_TO_PROMO = {v: k for k, v in PROMO_TO_ID.items()}
 ACTION_SIZE = 64 * 64 * 5
+MAX_LEGAL_MOVES = 218
 
 TOKEN_EMPTY = 0
 VOCAB_SIZE = 40

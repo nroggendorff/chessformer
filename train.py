@@ -16,6 +16,8 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
 
     model = ChessNet().to(device)
+    if device.type == "cuda":
+        model = torch.compile(model, mode="reduce-overhead")
     opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     scaler = torch.amp.GradScaler(device.type) if device.type == "cuda" else None
     replay = DualRingBuffer()

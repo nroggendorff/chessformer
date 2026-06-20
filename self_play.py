@@ -113,7 +113,7 @@ def run_self_play(
     device,
     iterations=100,
     games_per_iter=128,
-    mcts_sims=100,
+    mcts_sims=40,
     max_moves=120,
     sample_moves=15,
     batch_size=2048,
