@@ -1,7 +1,8 @@
-.dockerignore
 .git/
+.venv/
+.dockerignore
 .gitignore
-dependencies.txt
 Dockerfile
 LICENSE
+pyproject.toml
 README.md

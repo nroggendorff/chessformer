@@ -1,30 +1,11 @@
-FROM python:3.10-slim
+FROM public.ecr.aws/deep-learning-containers/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-sagemaker
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    unzip tar && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y stockfish && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /kaggle/working
+WORKDIR /app/
 
-COPY requirements.txt .
-
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir kaggle
-
-RUN mkdir /root/.kaggle
-
-RUN --mount=type=secret,id=kkey,target=/root/.kaggle/kaggle.json \
-    mkdir -p /kaggle/input/chesscom-user-games-60000-games && \
-    mkdir -p /kaggle/input/stockfish/other/binary/1 && \
-    kaggle datasets download -p /kaggle/input/chesscom-user-games-60000-games adityajha1504/chesscom-user-games-60000-games && \
-    unzip /kaggle/input/chesscom-user-games-60000-games/*.zip -d /kaggle/input/chesscom-user-games-60000-games/ && \
-    rm -f /kaggle/input/chesscom-user-games-60000-games/*.zip && \
-    kaggle models instances versions download -p /kaggle/input/stockfish/other/binary/1 nroggendorff/stockfish/other/binary/1 && \
-    tar -xvzf /kaggle/input/stockfish/other/binary/1/*.tar.gz -C /kaggle/input/stockfish/other/binary/1/ && \
-    rm -f /kaggle/input/stockfish/other/binary/1/*.tar.gz
+RUN pip install --no-cache-dir python-chess tqdm
 
 COPY . .
 
-CMD ["jupyter", "nbconvert", "--to", "notebook", "--inplace", "--execute", "--debug", "train.ipynb"]
+CMD ["python", "train.py"]
