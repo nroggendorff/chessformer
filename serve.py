@@ -44,25 +44,50 @@ def evaluate_position(board):
 
 def game_status(board):
     if board.is_checkmate():
-        return ("Black" if board.turn else "White") + " wins by checkmate"
+        return ("Black" if board.turn else "White") + " wins by Checkmate"
     if board.is_stalemate():
         return "Stalemate"
     if board.is_insufficient_material():
-        return "Draw, insufficient material"
+        return "Draw (Insufficient Material)"
     if board.can_claim_draw():
-        return "Draw available"
-    return ("White" if board.turn == chess.WHITE else "Black") + " to move"
+        return "Draw Available"
+    return ("White" if board.turn == chess.WHITE else "Black") + " to Move"
 
 
 def serialize(board):
+    pieces = []
+
+    for sq, piece in board.piece_map().items():
+        pieces.append(
+            {
+                "square": chess.square_name(sq),
+                "symbol": piece.symbol(),
+            }
+        )
+
+    check_square = None
+    if board.is_check():
+        king_sq = board.king(board.turn)
+        if king_sq is not None:
+            check_square = chess.square_name(king_sq)
+
     return {
         "svg": chess.svg.board(
-            board, lastmove=board.peek() if board.move_stack else None, size=480
+            board,
+            lastmove=board.peek() if board.move_stack else None,
+            size=480,
+            coordinates=False,
+            colors={
+                "square light": "#f0d9b5",
+                "square dark": "#b58863",
+            },
         ),
+        "pieces": pieces,
         "fen": board.fen(),
         "status": game_status(board),
         "game_over": board.is_game_over(claim_draw=True),
         "eval": evaluate_position(board),
+        "check_square": check_square,
     }
 
 
@@ -107,7 +132,7 @@ def api_move():
             move = board.parse_san(move_text)
         except ValueError:
             return (
-                jsonify({"error": "illegal or unparseable move", **serialize(board)}),
+                jsonify({"error": "Illegal or unparseable move", **serialize(board)}),
                 400,
             )
 
@@ -118,93 +143,760 @@ def api_move():
     return jsonify(serialize(board))
 
 
-INDEX_HTML = """
-<!DOCTYPE html>
-<html>
+INDEX_HTML = r"""
 <head>
-<meta charset="utf-8">
-<title>Play ChessNet</title>
-<style>
-body { background: #1e1e1e; color: #ddd; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding-top: 30px; }
-#layout { display: flex; gap: 16px; align-items: flex-start; }
-#evalbar { width: 30px; height: 480px; background: #111; position: relative; border: 1px solid #444; }
-#evalfill { position: absolute; bottom: 0; width: 100%; background: #eee; transition: height 0.3s; }
-#evaltext { position: absolute; top: -22px; width: 100%; text-align: center; font-size: 12px; }
-#board svg { display: block; }
-#controls { margin-top: 16px; display: flex; gap: 8px; }
-#status { margin-top: 10px; font-size: 14px; }
-input { padding: 6px; font-size: 14px; }
-button { padding: 6px 12px; font-size: 14px; cursor: pointer; }
-#error { color: #e66; margin-top: 6px; font-size: 13px; min-height: 18px; }
-</style>
+  <meta charset="utf-8" />
+  <title>Play ChessNet</title>
+
+  <style>
+    :root {
+      --bg-color:
+      --panel-bg:
+      --text-main:
+      --text-light:
+      --accent:
+      --accent-hover:
+      --border-color:
+      --board-size: 480px;
+    }
+
+    body {
+      background: var(--bg-color);
+      color: var(--text-main);
+      font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+        sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+
+      display: flex;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+
+      width: 24px;
+      background:
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      background:
+      transition: height 0.3s ease-in-out;
+    }
+
+
+      position: absolute;
+      top: 6px;
+      width: 100%;
+      text-align: center;
+      font-size: 10px;
+      font-weight: bold;
+      color:
+      z-index: 2;
+    }
+
+
+      position: relative;
+      width: var(--board-size);
+      height: var(--board-size);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+
+      border-radius: 4px;
+      width: 100%;
+      height: 100%;
+    }
+
+
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .piece {
+      position: absolute;
+      width: 60px;
+      height: 60px;
+      cursor: grab;
+      user-select: none;
+      z-index: 10;
+      pointer-events: auto;
+      transition:
+        left 0.25s ease-in-out,
+        top 0.25s ease-in-out,
+        opacity 0.2s ease-out;
+    }
+
+    .piece.dragging {
+      z-index: 100;
+      cursor: grabbing;
+      transition: none;
+      transform: scale(1.15);
+      filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.6));
+    }
+
+    .piece.in-check {
+      background: radial-gradient(
+        circle,
+        rgba(235, 64, 52, 1) 0%,
+        rgba(235, 64, 52, 0.4) 60%,
+        rgba(0, 0, 0, 0) 70%
+      );
+      border-radius: 50%;
+      animation: check-pulse 1.2s infinite alternate ease-in-out;
+    }
+
+    @keyframes check-pulse {
+      from {
+        filter: drop-shadow(0 0 4px rgba(235, 64, 52, 0.6));
+        background: radial-gradient(
+          circle,
+          rgba(235, 64, 52, 0.95) 0%,
+          rgba(235, 64, 52, 0.35) 60%,
+          rgba(0, 0, 0, 0) 70%
+        );
+      }
+      to {
+        filter: drop-shadow(0 0 14px rgba(235, 64, 52, 0.95));
+        background: radial-gradient(
+          circle,
+          rgba(235, 64, 52, 1) 0%,
+          rgba(235, 64, 52, 0.55) 60%,
+          rgba(0, 0, 0, 0) 70%
+        );
+      }
+    }
+
+    .coord {
+      position: absolute;
+      font-size: 11px;
+      font-weight: bold;
+      pointer-events: none;
+      user-select: none;
+      z-index: 5;
+    }
+
+    .coord-file {
+      bottom: 3px;
+      right: 5px;
+    }
+
+    .coord-rank {
+      top: 4px;
+      left: 4px;
+    }
+
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.75);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    .promotion-dialog {
+      background: var(--panel-bg);
+      border: 2px solid var(--border-color);
+      border-radius: 8px;
+      padding: 24px;
+      text-align: center;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+      width: 250px;
+    }
+
+    .promotion-dialog h3 {
+      margin: 0 0 16px 0;
+      color: var(--text-light);
+      font-size: 18px;
+    }
+
+    .promotion-options {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+
+    .promotion-options button {
+      width: 50px;
+      height: 50px;
+      padding: 4px;
+      background:
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition:
+        background 0.2s,
+        transform 0.1s;
+    }
+
+    .promotion-options button:hover {
+      background:
+      transform: scale(1.1);
+    }
+
+    .promotion-options svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .cancel-btn {
+      background:
+      color: white !important;
+      font-size: 14px !important;
+      padding: 10px 20px !important;
+      width: auto !important;
+      display: inline-block;
+    }
+
+    .cancel-btn:hover {
+      background:
+    }
+
+
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      width: 320px;
+    }
+
+    .panel {
+      background: var(--panel-bg);
+      border-radius: 4px;
+      padding: 24px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+
+      font-size: 22px;
+      font-weight: bold;
+      color: var(--text-light);
+      margin: 0 0 8px 0;
+    }
+
+
+      color:
+      min-height: 20px;
+      font-size: 14px;
+      font-weight: bold;
+      margin-bottom: 20px;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    button {
+      padding: 14px;
+      background:
+      color: var(--text-main);
+      border: none;
+      border-radius: 4px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      transition:
+        background 0.2s,
+        color 0.2s;
+      width: 100%;
+    }
+
+    button:hover {
+      background:
+      color: var(--text-light);
+    }
+
+    button.primary {
+      background: var(--accent);
+      color:
+    }
+
+    button.primary:hover {
+      background: var(--accent-hover);
+    }
+  </style>
 </head>
+
 <body>
-<div id="layout">
-<div id="evalbar"><div id="evaltext">0.00</div><div id="evalfill" style="height:50%"></div></div>
-<div id="board"></div>
-</div>
-<div id="status"></div>
-<div id="error"></div>
-<form id="moveform" autocomplete="off">
-<div id="controls">
-<input id="moveinput" placeholder="e2e4 or Nf3" autofocus>
-<button type="submit">Move</button>
-<button type="button" id="undo">Undo</button>
-<button type="button" id="newgame">New Game</button>
-</div>
-</form>
-<script>
-function render(data) {
-  document.getElementById("board").innerHTML = data.svg;
-  document.getElementById("status").textContent = data.status;
-  document.getElementById("error").textContent = data.error || "";
-  const pct = data.eval.mate !== undefined
-    ? (data.eval.mate > 0 ? 100 : 0)
-    : 50 + 50 * Math.tanh(data.eval.cp / 400);
-  document.getElementById("evalfill").style.height = pct + "%";
-  document.getElementById("evaltext").textContent = data.eval.mate !== undefined
-    ? "M" + Math.abs(data.eval.mate)
-    : (data.eval.cp / 100).toFixed(2);
-}
+  <div id="layout">
+    <div id="evalbar-container">
+      <div id="evaltext">0.00</div>
+      <div id="evalfill" style="height: 50%"></div>
+    </div>
 
-async function refresh() {
-  render(await (await fetch("/api/state")).json());
-}
+    <div id="board-container">
+      <div id="board-bg"></div>
+      <div id="board-pieces"></div>
 
-document.getElementById("moveform").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const input = document.getElementById("moveinput");
-  const data = await (await fetch("/api/move", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ move: input.value }),
-  })).json();
-  input.value = "";
-  render(data);
-});
+      <!-- Promotion Modal Overlay -->
+      <div id="promotion-overlay">
+        <div class="promotion-dialog">
+          <h3>Promote Pawn</h3>
+          <div class="promotion-options">
+            <button data-piece="q" title="Queen">
+              <svg viewBox="0 0 45 45">
+                <use id="promo-q-use" href=""></use>
+              </svg>
+            </button>
+            <button data-piece="r" title="Rook">
+              <svg viewBox="0 0 45 45">
+                <use id="promo-r-use" href=""></use>
+              </svg>
+            </button>
+            <button data-piece="b" title="Bishop">
+              <svg viewBox="0 0 45 45">
+                <use id="promo-b-use" href=""></use>
+              </svg>
+            </button>
+            <button data-piece="n" title="Knight">
+              <svg viewBox="0 0 45 45">
+                <use id="promo-n-use" href=""></use>
+              </svg>
+            </button>
+          </div>
+          <button type="button" id="promotion-cancel" class="cancel-btn">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
 
-document.getElementById("newgame").addEventListener("click", async () => {
-  render(await (await fetch("/api/new", { method: "POST" })).json());
-});
+    <div id="sidebar">
+      <div class="panel">
+        <h2 id="status">Loading...</h2>
+        <div id="error"></div>
 
-document.getElementById("undo").addEventListener("click", async () => {
-  render(await (await fetch("/api/undo", { method: "POST" })).json());
-});
+        <div class="btn-row">
+          <button type="button" id="newgame" class="primary">New Game</button>
+          <button type="button" id="undo">Undo Move</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
-refresh();
-</script>
+  <script>
+    const SYMBOL_TO_ID = {
+      P: "white-pawn",
+      N: "white-knight",
+      B: "white-bishop",
+      R: "white-rook",
+      Q: "white-queen",
+      K: "white-king",
+      p: "black-pawn",
+      n: "black-knight",
+      b: "black-bishop",
+      r: "black-rook",
+      q: "black-queen",
+      k: "black-king",
+    };
+
+    const LIGHT_COLOR = "#f0d9b5";
+    const DARK_COLOR = "#b58863";
+
+    let pendingPromotion = null;
+
+    function squarePos(square) {
+      const file = "abcdefgh".indexOf(square[0]);
+      const rank = parseInt(square[1]);
+      return {
+        left: file * 60,
+        top: (8 - rank) * 60,
+      };
+    }
+
+    function squareFromPoint(x, y) {
+      const rect = document
+        .getElementById("board-container")
+        .getBoundingClientRect();
+      const bx = x - rect.left;
+      const by = y - rect.top;
+
+      const file = Math.floor(bx / 60);
+      const rank = 7 - Math.floor(by / 60);
+
+      if (file < 0 || file > 7 || rank < 0 || rank > 7) {
+        return null;
+      }
+
+      return "abcdefgh"[file] + (rank + 1);
+    }
+
+    function initCoordinates() {
+      const boardContainer = document.getElementById("board-container");
+
+      for (let r = 1; r <= 8; r++) {
+        const div = document.createElement("div");
+        div.className = "coord coord-rank";
+        div.textContent = r;
+
+        const isLightSquare = r % 2 === 0;
+        div.style.color = isLightSquare ? DARK_COLOR : LIGHT_COLOR;
+
+        const pos = squarePos("a" + r);
+        div.style.top = pos.top + "px";
+        boardContainer.appendChild(div);
+      }
+
+      const files = "abcdefgh";
+      for (let f = 0; f < 8; f++) {
+        const div = document.createElement("div");
+        div.className = "coord coord-file";
+        div.textContent = files[f];
+
+        const isLightSquare = f % 2 !== 0;
+        div.style.color = isLightSquare ? DARK_COLOR : LIGHT_COLOR;
+
+        const pos = squarePos(files[f] + "1");
+        div.style.left = pos.left + "px";
+        boardContainer.appendChild(div);
+      }
+    }
+
+    function createPieceElement(symbol, square) {
+      const div = document.createElement("div");
+      div.className = "piece";
+      div.dataset.symbol = symbol;
+      div.dataset.square = square;
+
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 45 45");
+      svg.style.width = "100%";
+      svg.style.height = "100%";
+
+      const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+      use.setAttribute("href", "#" + SYMBOL_TO_ID[symbol]);
+
+      svg.appendChild(use);
+      div.appendChild(svg);
+
+      makeDraggable(div);
+      document.getElementById("board-pieces").appendChild(div);
+      return div;
+    }
+
+    function renderPieces(newPieces, checkSquare) {
+      const piecesContainer = document.getElementById("board-pieces");
+      const currentPieceElements = Array.from(
+        piecesContainer.querySelectorAll(".piece"),
+      );
+
+      const matchedCurrent = new Set();
+      const matchedNew = new Set();
+
+      function updateCheckHighlight(elem, symbol, sq) {
+        if (sq === checkSquare && (symbol === "K" || symbol === "k")) {
+          elem.classList.add("in-check");
+        } else {
+          elem.classList.remove("in-check");
+        }
+      }
+
+      newPieces.forEach((np, i) => {
+        const matchIdx = currentPieceElements.findIndex(
+          (cp, j) =>
+            !matchedCurrent.has(j) &&
+            cp.dataset.symbol === np.symbol &&
+            cp.dataset.square === np.square,
+        );
+
+        if (matchIdx !== -1) {
+          matchedCurrent.add(matchIdx);
+          matchedNew.add(i);
+          const piece = currentPieceElements[matchIdx];
+          updateCheckHighlight(piece, np.symbol, np.square);
+        }
+      });
+
+      newPieces.forEach((np, i) => {
+        if (matchedNew.has(i)) return;
+
+        const matchIdx = currentPieceElements.findIndex(
+          (cp, j) => !matchedCurrent.has(j) && cp.dataset.symbol === np.symbol,
+        );
+
+        if (matchIdx !== -1) {
+          matchedCurrent.add(matchIdx);
+          matchedNew.add(i);
+
+          const piece = currentPieceElements[matchIdx];
+          piece.dataset.square = np.square;
+          const pos = squarePos(np.square);
+          piece.style.left = pos.left + "px";
+          piece.style.top = pos.top + "px";
+          updateCheckHighlight(piece, np.symbol, np.square);
+        }
+      });
+
+      newPieces.forEach((np, i) => {
+        if (matchedNew.has(i)) return;
+
+        const div = createPieceElement(np.symbol, np.square);
+        const pos = squarePos(np.square);
+        div.style.left = pos.left + "px";
+        div.style.top = pos.top + "px";
+        updateCheckHighlight(div, np.symbol, np.square);
+      });
+
+      currentPieceElements.forEach((cp, j) => {
+        if (!matchedCurrent.has(j)) {
+          cp.style.opacity = "0";
+          setTimeout(() => cp.remove(), 200);
+        }
+      });
+    }
+
+    function showPromotionModal(color) {
+      const prefix = color === "white" ? "white-" : "black-";
+      document
+        .getElementById("promo-q-use")
+        .setAttribute("href", "#" + prefix + "queen");
+      document
+        .getElementById("promo-r-use")
+        .setAttribute("href", "#" + prefix + "rook");
+      document
+        .getElementById("promo-b-use")
+        .setAttribute("href", "#" + prefix + "bishop");
+      document
+        .getElementById("promo-n-use")
+        .setAttribute("href", "#" + prefix + "knight");
+      document.getElementById("promotion-overlay").style.display = "flex";
+    }
+
+    function hidePromotionModal() {
+      document.getElementById("promotion-overlay").style.display = "none";
+      pendingPromotion = null;
+    }
+
+    async function handlePromotionSelection(pieceChar) {
+      if (!pendingPromotion) return;
+      const { startSquare, target, piece } = pendingPromotion;
+      const fullMove = startSquare + target + pieceChar;
+
+      const targetPos = squarePos(target);
+      piece.style.left = targetPos.left + "px";
+      piece.style.top = targetPos.top + "px";
+      piece.dataset.square = target;
+      piece.classList.remove("dragging");
+
+      hidePromotionModal();
+
+      const response = await fetch("/api/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ move: fullMove }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        document.getElementById("error").textContent =
+          data.error || "Invalid move";
+      }
+      render(data);
+    }
+
+    function makeDraggable(piece) {
+      piece.addEventListener("mousedown", (e) => {
+        if (pendingPromotion) return;
+
+        const startSquare = piece.dataset.square;
+        const rect = piece.getBoundingClientRect();
+
+        const ox = e.clientX - rect.left;
+        const oy = e.clientY - rect.top;
+
+        piece.classList.add("dragging");
+
+        function move(ev) {
+          const board = document
+            .getElementById("board-container")
+            .getBoundingClientRect();
+          piece.style.left = ev.clientX - board.left - ox + "px";
+          piece.style.top = ev.clientY - board.top - oy + "px";
+        }
+
+        async function up(ev) {
+          document.removeEventListener("mousemove", move);
+          document.removeEventListener("mouseup", up);
+
+          const target = squareFromPoint(ev.clientX, ev.clientY);
+
+          if (!target || target === startSquare) {
+            piece.classList.remove("dragging");
+            const pos = squarePos(startSquare);
+            piece.style.left = pos.left + "px";
+            piece.style.top = pos.top + "px";
+            return;
+          }
+
+          const isWhitePawnPromo =
+            piece.dataset.symbol === "P" &&
+            startSquare[1] === "7" &&
+            target[1] === "8";
+          const isBlackPawnPromo =
+            piece.dataset.symbol === "p" &&
+            startSquare[1] === "2" &&
+            target[1] === "1";
+
+          if (isWhitePawnPromo || isBlackPawnPromo) {
+            const targetPos = squarePos(target);
+            piece.style.left = targetPos.left + "px";
+            piece.style.top = targetPos.top + "px";
+            piece.classList.remove("dragging");
+
+            pendingPromotion = { startSquare, target, piece };
+            showPromotionModal(isWhitePawnPromo ? "white" : "black");
+            return;
+          }
+
+          const targetPos = squarePos(target);
+          piece.style.left = targetPos.left + "px";
+          piece.style.top = targetPos.top + "px";
+          piece.dataset.square = target;
+          piece.classList.remove("dragging");
+
+          const response = await fetch("/api/move", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ move: startSquare + target }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            document.getElementById("error").textContent =
+              data.error || "Invalid move";
+          }
+
+          render(data);
+        }
+
+        document.addEventListener("mousemove", move);
+        document.addEventListener("mouseup", up);
+      });
+    }
+
+    function render(data) {
+      const tempDiv = document.createElement("div");
+      tempDiv.innerHTML = data.svg;
+      const pieceUses = tempDiv.querySelectorAll("use");
+      pieceUses.forEach((u) => {
+        const href = u.getAttribute("href") || u.getAttribute("xlink:href");
+        if (
+          href &&
+          (href.startsWith("#white-") || href.startsWith("#black-"))
+        ) {
+          u.remove();
+        }
+      });
+
+      document.getElementById("board-bg").innerHTML = tempDiv.innerHTML;
+
+      renderPieces(data.pieces, data.check_square);
+
+      document.getElementById("status").textContent = data.status;
+      document.getElementById("error").textContent = data.error || "";
+
+      const pct =
+        data.eval.mate !== undefined
+          ? data.eval.mate > 0
+            ? 100
+            : 0
+          : 50 + 50 * Math.tanh(data.eval.cp / 400);
+
+      document.getElementById("evalfill").style.height = pct + "%";
+
+      const evalTextEl = document.getElementById("evaltext");
+      evalTextEl.textContent =
+        data.eval.mate !== undefined
+          ? "M" + Math.abs(data.eval.mate)
+          : (data.eval.cp / 100).toFixed(2);
+
+      evalTextEl.style.color = pct > 80 ? "#222222" : "#cccccc";
+    }
+
+    async function refresh() {
+      render(await (await fetch("/api/state")).json());
+    }
+
+    document.getElementById("newgame").addEventListener("click", async () => {
+      hidePromotionModal();
+      render(await (await fetch("/api/new", { method: "POST" })).json());
+    });
+
+    document.getElementById("undo").addEventListener("click", async () => {
+      hidePromotionModal();
+      render(await (await fetch("/api/undo", { method: "POST" })).json());
+    });
+
+    document
+      .getElementById("promotion-cancel")
+      .addEventListener("click", () => {
+        if (pendingPromotion) {
+          const { startSquare, piece } = pendingPromotion;
+          piece.classList.remove("dragging");
+          const pos = squarePos(startSquare);
+          piece.style.left = pos.left + "px";
+          piece.style.top = pos.top + "px";
+        }
+        hidePromotionModal();
+      });
+
+    document.querySelectorAll(".promotion-options button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        handlePromotionSelection(btn.dataset.piece);
+      });
+    });
+
+    initCoordinates();
+    refresh();
+  </script>
 </body>
-</html>
 """
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint")
+    parser.add_argument("checkpoint", default="/opt/ml/model/chessformer.safetensors")
     parser.add_argument("--stockfish-path", default="/usr/games/stockfish")
     parser.add_argument("--sims", type=int, default=200)
     parser.add_argument("--eval-depth", type=int, default=14)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5000)
     args = parser.parse_args()
 

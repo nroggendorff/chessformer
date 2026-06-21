@@ -8,4 +8,5 @@ RUN pip install --no-cache-dir python-chess tqdm flask
 
 COPY . .
 
+EXPOSE 5000
 CMD ["python", "train.py"]
