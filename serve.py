@@ -895,7 +895,9 @@ INDEX_HTML = r"""
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint", default="/opt/ml/model/chessformer.safetensors")
+    parser.add_argument(
+        "checkpoint", nargs="?", default="/opt/ml/model/chessformer.safetensors"
+    )
     parser.add_argument("--stockfish-path", default="/usr/games/stockfish")
     parser.add_argument("--sims", type=int, default=200)
     parser.add_argument("--eval-depth", type=int, default=14)
