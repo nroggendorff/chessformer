@@ -98,16 +98,18 @@ def batched_mcts_sim(roots, boards, model, device, cpuct=1.5, add_noise=False):
         b_tokens = torch.tensor(eval_tokens, dtype=torch.long, device=device)
         logits, val_preds = model(b_tokens)
 
+        triples = np.array(
+            [(idx, f, t) for idx, m in enumerate(eval_move_maps) for f, t in m]
+        )
         mask_cpu = torch.zeros((len(eval_indices), 64, 64), dtype=torch.bool)
-        for idx, move_map in enumerate(eval_move_maps):
-            for f, t in move_map:
-                mask_cpu[idx, f, t] = True
+        mask_cpu[triples[:, 0], triples[:, 1], triples[:, 2]] = True
 
         logits = logits.masked_fill(~mask_cpu.to(device, non_blocking=True), -1e4)
-        probs = (
+        probs_np = (
             torch.softmax(logits.view(len(eval_indices), -1), dim=-1)
             .view(len(eval_indices), 64, 64)
             .cpu()
+            .numpy()
         )
         val_preds = val_preds.cpu().tolist()
 
@@ -117,8 +119,8 @@ def batched_mcts_sim(roots, boards, model, device, cpuct=1.5, add_noise=False):
                 val_preds[idx],
                 eval_move_maps[idx],
             )
-            pairs = list(move_map.keys())
-            p = np.array([probs[idx, f, t].item() for f, t in pairs], dtype=np.float32)
+            pairs = np.array(list(move_map.keys()))
+            p = probs_np[idx, pairs[:, 0], pairs[:, 1]]
 
             if add_noise and len(search_paths[original_i]) == 1 and len(pairs) > 1:
                 p = 0.75 * p + 0.25 * np.random.dirichlet([0.3] * len(pairs))

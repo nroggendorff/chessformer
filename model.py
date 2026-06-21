@@ -25,12 +25,12 @@ class ChessNet(nn.Module):
             nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 1), nn.Tanh()
         )
         self.scale = d_model**-0.5
+        self.register_buffer("positions", torch.arange(SEQ_LEN), persistent=False)
 
     def forward(self, board_tokens):
         B, S = board_tokens.shape
         board = self.encoder(
-            self.token_emb(board_tokens)
-            + self.pos_emb(torch.arange(S, device=board_tokens.device).expand(B, S))
+            self.token_emb(board_tokens) + self.pos_emb(self.positions[:S].expand(B, S))
         )
         squares = board[:, :BOARD_SQUARES]
         policy_logits = (
