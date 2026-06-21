@@ -105,25 +105,10 @@ def generate_self_play_data(
         return [s for f in concurrent.futures.as_completed(futures) for s in f.result()]
 
 
-def run_self_play(
-    model,
-    train_model,
-    opt,
-    scaler,
-    replay,
-    device,
-    iterations=100,
-    games_per_iter=128,
-    mcts_sims=40,
-    max_moves=120,
-    sample_moves=15,
-    batch_size=2048,
-    gradient_steps=15,
-    self_play_workers=None,
-):
+def run_self_play(model, train_model, opt, scaler, replay, device, config):
     use_multiprocessing = device.type != "cuda"
     max_workers = (
-        min(self_play_workers or mp.cpu_count(), games_per_iter)
+        min(config.max_workers, config.self_play_games_per_iter)
         if use_multiprocessing
         else None
     )
@@ -149,15 +134,17 @@ def run_self_play(
     )
 
     with executor_cm as executor:
-        pbar = tqdm(range(iterations), desc="Self-Play RL Optimization")
+        pbar = tqdm(
+            range(config.self_play_iterations), desc="Self-Play RL Optimization"
+        )
         for _ in pbar:
             replay.extend_rl(
                 generate_self_play_data(
                     model,
-                    games_per_iter,
-                    mcts_sims,
-                    max_moves,
-                    sample_moves,
+                    config.self_play_games_per_iter,
+                    config.self_play_mcts_sims,
+                    config.self_play_max_moves,
+                    config.self_play_sample_moves,
                     device,
                     max_workers=max_workers,
                     executor=executor,
@@ -170,10 +157,13 @@ def run_self_play(
                         train_model,
                         opt,
                         scaler,
-                        replay.sample(batch_size, mix_ratio=0.5),
+                        replay.sample(
+                            config.self_play_batch_size,
+                            mix_ratio=config.self_play_mix_ratio,
+                        ),
                         device,
                     )
-                    for _ in range(gradient_steps)
+                    for _ in range(config.self_play_gradient_steps)
                 ]
                 avg_loss, avg_p, avg_v = (
                     sum(x[i] for x in losses) / len(losses) for i in range(3)

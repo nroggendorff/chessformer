@@ -1,7 +1,6 @@
 import concurrent.futures
 import gc
 import math
-import multiprocessing
 import random
 
 import chess
@@ -88,16 +87,12 @@ def worker_generate_games(engine_path, num_games, max_moves=60, depth=3):
     return samples
 
 
-def generate_pretrain_data(
-    stockfish_path,
-    replay,
-    total_games,
-    games_per_task=50,
-    max_workers=None,
-    max_moves=60,
-    depth=3,
-):
-    max_workers = max_workers or multiprocessing.cpu_count()
+def generate_pretrain_data(config, replay):
+    total_games, games_per_task, max_workers = (
+        config.pretrain_games,
+        config.pretrain_games_per_task,
+        config.max_workers,
+    )
     task_game_counts = [games_per_task] * (total_games // games_per_task)
     if total_games % games_per_task:
         task_game_counts.append(total_games % games_per_task)
@@ -110,7 +105,11 @@ def generate_pretrain_data(
         ):
             futures = [
                 executor.submit(
-                    worker_generate_games, stockfish_path, count, max_moves, depth
+                    worker_generate_games,
+                    config.stockfish_path,
+                    count,
+                    config.pretrain_max_moves,
+                    config.pretrain_depth,
                 )
                 for count in task_game_counts[i : i + max_workers]
             ]
