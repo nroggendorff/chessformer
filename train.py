@@ -2,6 +2,7 @@ import os
 import shutil
 
 import torch
+from safetensors.torch import save_file
 
 from model import ChessNet
 from pretrain import run_pretraining
@@ -32,7 +33,7 @@ def main():
 
     model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
     os.makedirs(model_dir, exist_ok=True)
-    torch.save(model.state_dict(), os.path.join(model_dir, "chessformer.pt"))
+    save_file(model.state_dict(), os.path.join(model_dir, "chessformer.safetensors"))
 
 
 if __name__ == "__main__":
