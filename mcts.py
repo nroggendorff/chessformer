@@ -45,7 +45,7 @@ def select_child(node, cpuct):
     total_visits = math.sqrt(node.visit_count + 1e-8)
     return max(
         node.children.items(),
-        key=lambda x: x[1].q
+        key=lambda x: -x[1].q
         + cpuct * x[1].prior * total_visits / (1.0 + x[1].visit_count),
     )
 
