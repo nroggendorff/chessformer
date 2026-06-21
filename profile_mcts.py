@@ -9,8 +9,6 @@ import chess
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ChessNet().to(device).eval()
-    if device.type == "cuda":
-        model = torch.compile(model, mode="reduce-overhead")
 
     boards = [chess.Board() for _ in range(128)]
     roots = [MCTSNode(prior=1.0) for _ in boards]

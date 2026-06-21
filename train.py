@@ -16,8 +16,9 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
 
     model = ChessNet().to(device)
-    if device.type == "cuda":
-        model = torch.compile(model, mode="reduce-overhead")
+    train_model = (
+        torch.compile(model, mode="reduce-overhead") if device.type == "cuda" else model
+    )
     opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     scaler = torch.amp.GradScaler(device.type) if device.type == "cuda" else None
     replay = DualRingBuffer()
@@ -26,8 +27,8 @@ def main():
 
     stockfish_path = shutil.which("stockfish") or "/usr/games/stockfish"
 
-    run_pretraining(model, opt, scaler, replay, device, stockfish_path)
-    run_self_play(model, opt, scaler, replay, device)
+    run_pretraining(train_model, opt, scaler, replay, device, stockfish_path)
+    run_self_play(model, train_model, opt, scaler, replay, device)
 
     model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
     os.makedirs(model_dir, exist_ok=True)

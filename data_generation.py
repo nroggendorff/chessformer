@@ -9,7 +9,7 @@ import chess.engine
 import numpy as np
 from tqdm import tqdm
 
-from encoding import board_to_tokens
+from encoding import board_to_tokens, canonical_square, legal_mask_grid
 
 
 def generate_game(engine, max_moves=60, depth=3):
@@ -35,16 +35,31 @@ def generate_game(engine, max_moves=60, depth=3):
         if scores:
             total = sum(scores.values())
             for move, sc in scores.items():
-                policy_grid[move.from_square, move.to_square] = sc / total
+                policy_grid[
+                    canonical_square(move.from_square, board),
+                    canonical_square(move.to_square, board),
+                ] = (
+                    sc / total
+                )
         else:
             legal_moves = list(board.legal_moves)
             uniform = 1.0 / len(legal_moves)
             for move in legal_moves:
-                policy_grid[move.from_square, move.to_square] = uniform
+                policy_grid[
+                    canonical_square(move.from_square, board),
+                    canonical_square(move.to_square, board),
+                ] = uniform
 
-        value = math.tanh(infos[0]["score"].white().score(mate_score=10000) / 400.0)
+        value = math.tanh(
+            infos[0]["score"].pov(board.turn).score(mate_score=10000) / 400.0
+        )
         samples.append(
-            (np.array(board_to_tokens(board), dtype=np.uint8), policy_grid, value)
+            (
+                np.array(board_to_tokens(board), dtype=np.uint8),
+                policy_grid,
+                value,
+                legal_mask_grid(board),
+            )
         )
 
         board.push(

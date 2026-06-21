@@ -5,7 +5,12 @@ import chess
 import numpy as np
 import torch
 
-from encoding import board_to_tokens, legal_moves_by_square_pair
+from encoding import (
+    board_to_tokens,
+    canonical_square,
+    legal_mask_grid,
+    legal_moves_by_square_pair,
+)
 
 
 class MCTSNode:
@@ -48,6 +53,15 @@ def select_child(node, cpuct):
         key=lambda x: x[1].q
         + cpuct * x[1].prior * total_visits / (1.0 + x[1].visit_count),
     )
+
+
+def add_root_noise(root, alpha=0.3, frac=0.25):
+    if len(root.children) <= 1:
+        return
+    for child, n in zip(
+        root.children.values(), np.random.dirichlet([alpha] * len(root.children))
+    ):
+        child.prior = (1 - frac) * child.prior + frac * n
 
 
 @torch.inference_mode()
@@ -161,6 +175,7 @@ def play_games_batched(
 ):
     model.eval()
     boards = [chess.Board() for _ in range(num_games)]
+    roots = [MCTSNode(prior=1.0) for _ in range(num_games)]
     trajectories = [[] for _ in range(num_games)]
     finished = [False] * num_games
 
@@ -170,16 +185,31 @@ def play_games_batched(
             break
 
         active_boards = [boards[i] for i in active_indices]
-        roots = [MCTSNode(prior=1.0) for _ in active_boards]
-        batched_mcts_sim(roots, active_boards, model, device, add_noise=True)
+        active_roots = [roots[i] for i in active_indices]
 
+        for root in active_roots:
+            if root.expanded:
+                add_root_noise(root)
+
+        batched_mcts_sim(active_roots, active_boards, model, device, add_noise=True)
+
+        sim_indices = list(range(len(active_roots)))
         for _ in range(sims - 1):
-            if all(root_converged(r) for r in roots):
+            sim_indices = [
+                i for i in sim_indices if not root_converged(active_roots[i])
+            ]
+            if not sim_indices:
                 break
-            batched_mcts_sim(roots, active_boards, model, device, add_noise=False)
+            batched_mcts_sim(
+                [active_roots[i] for i in sim_indices],
+                [active_boards[i] for i in sim_indices],
+                model,
+                device,
+                add_noise=False,
+            )
 
         for idx, original_i in enumerate(active_indices):
-            board, root = boards[original_i], roots[idx]
+            board, root = boards[original_i], roots[original_i]
             if not root.children or board.is_game_over(claim_draw=True):
                 finished[original_i] = True
                 continue
@@ -189,20 +219,26 @@ def play_games_batched(
             )
             policy_grid = np.zeros((64, 64), dtype=np.float32)
             for move, p in zip(moves, probs.tolist()):
-                policy_grid[move.from_square, move.to_square] = p
+                policy_grid[
+                    canonical_square(move.from_square, board),
+                    canonical_square(move.to_square, board),
+                ] = p
 
             trajectories[original_i].append(
                 {
                     "board_tokens": board_to_tokens(board),
                     "policy_grid": policy_grid,
+                    "legal_mask": legal_mask_grid(board),
                     "turn": board.turn,
                 }
             )
-            board.push(
+            chosen = (
                 random.choices(moves, weights=probs.tolist(), k=1)[0]
                 if ply < sample_moves
                 else moves[int(torch.argmax(probs).item())]
             )
+            board.push(chosen)
+            roots[original_i] = root.children[chosen]
 
     samples = []
     for i, board in enumerate(boards):
@@ -219,6 +255,7 @@ def play_games_batched(
                     np.array(step["board_tokens"], dtype=np.uint8),
                     step["policy_grid"],
                     value,
+                    step["legal_mask"],
                 )
             )
     return samples

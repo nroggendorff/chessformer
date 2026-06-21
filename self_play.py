@@ -107,6 +107,7 @@ def generate_self_play_data(
 
 def run_self_play(
     model,
+    train_model,
     opt,
     scaler,
     replay,
@@ -166,7 +167,7 @@ def run_self_play(
             if len(replay.pretrain_buf) > 0 or len(replay.rl_buf) > 0:
                 losses = [
                     train_batch(
-                        model,
+                        train_model,
                         opt,
                         scaler,
                         replay.sample(batch_size, mix_ratio=0.5),

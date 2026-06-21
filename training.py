@@ -12,6 +12,7 @@ def train_batch(model, opt, scaler, samples, device):
     target_values = torch.tensor(
         [s[2] for s in samples], dtype=torch.float32, device=device
     )
+    legal_mask = torch.from_numpy(np.stack([s[3] for s in samples])).to(device)
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(
@@ -19,6 +20,7 @@ def train_batch(model, opt, scaler, samples, device):
         dtype=torch.float16 if device.type == "cuda" else torch.bfloat16,
     ):
         logits, value_pred = model(boards)
+        logits = logits.masked_fill(~legal_mask, -1e4)
         logits_flat = logits.view(logits.size(0), -1)
         target_flat = target_policy.view(target_policy.size(0), -1)
         policy_loss = (
