@@ -1,5 +1,4 @@
 import chess
-import numpy as np
 
 TOKEN_EMPTY = 0
 BOARD_SQUARES = 64
@@ -75,10 +74,3 @@ def legal_moves_by_square_pair(board):
         else:
             moves.setdefault(key, move)
     return moves
-
-
-def legal_mask_grid(board):
-    mask = np.zeros((BOARD_SQUARES, BOARD_SQUARES), dtype=bool)
-    for f, t in legal_moves_by_square_pair(board):
-        mask[f, t] = True
-    return mask

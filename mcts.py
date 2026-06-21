@@ -5,12 +5,7 @@ import chess
 import numpy as np
 import torch
 
-from encoding import (
-    board_to_tokens,
-    canonical_square,
-    legal_mask_grid,
-    legal_moves_by_square_pair,
-)
+from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pair
 
 
 class MCTSNode:
@@ -217,18 +212,27 @@ def play_games_batched(
             moves, probs = root_policy_from_visits(
                 root, temperature=1.0 if ply < sample_moves else 0.5
             )
-            policy_grid = np.zeros((64, 64), dtype=np.float32)
-            for move, p in zip(moves, probs.tolist()):
-                policy_grid[
-                    canonical_square(move.from_square, board),
-                    canonical_square(move.to_square, board),
-                ] = p
+            policy_pairs = np.array(
+                [
+                    (
+                        canonical_square(move.from_square, board),
+                        canonical_square(move.to_square, board),
+                    )
+                    for move in moves
+                ],
+                dtype=np.uint8,
+            )
+            policy_probs = probs.numpy().astype(np.float32)
+            legal_pairs = np.array(
+                list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
+            )
 
             trajectories[original_i].append(
                 {
                     "board_tokens": board_to_tokens(board),
-                    "policy_grid": policy_grid,
-                    "legal_mask": legal_mask_grid(board),
+                    "legal_pairs": legal_pairs,
+                    "policy_pairs": policy_pairs,
+                    "policy_probs": policy_probs,
                     "turn": board.turn,
                 }
             )
@@ -253,9 +257,10 @@ def play_games_batched(
             samples.append(
                 (
                     np.array(step["board_tokens"], dtype=np.uint8),
-                    step["policy_grid"],
+                    step["legal_pairs"],
+                    step["policy_pairs"],
+                    step["policy_probs"],
                     value,
-                    step["legal_mask"],
                 )
             )
     return samples

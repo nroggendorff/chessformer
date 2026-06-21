@@ -9,7 +9,7 @@ import chess.engine
 import numpy as np
 from tqdm import tqdm
 
-from encoding import board_to_tokens, canonical_square, legal_mask_grid
+from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pair
 
 
 def generate_game(engine, max_moves=60, depth=3):
@@ -31,24 +31,29 @@ def generate_game(engine, max_moves=60, depth=3):
                 sc = info["score"].pov(board.turn).score(mate_score=10000)
                 scores[move] = math.exp(max(min(sc, 1000), -1000) / 100.0)
 
-        policy_grid = np.zeros((64, 64), dtype=np.float32)
+        legal_pairs = np.array(
+            list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
+        )
         if scores:
             total = sum(scores.values())
-            for move, sc in scores.items():
-                policy_grid[
-                    canonical_square(move.from_square, board),
-                    canonical_square(move.to_square, board),
-                ] = (
-                    sc / total
-                )
+            policy_pairs = np.array(
+                [
+                    (
+                        canonical_square(move.from_square, board),
+                        canonical_square(move.to_square, board),
+                    )
+                    for move in scores
+                ],
+                dtype=np.uint8,
+            )
+            policy_probs = np.array(
+                [sc / total for sc in scores.values()], dtype=np.float32
+            )
         else:
-            legal_moves = list(board.legal_moves)
-            uniform = 1.0 / len(legal_moves)
-            for move in legal_moves:
-                policy_grid[
-                    canonical_square(move.from_square, board),
-                    canonical_square(move.to_square, board),
-                ] = uniform
+            policy_pairs = legal_pairs
+            policy_probs = np.full(
+                len(legal_pairs), 1.0 / len(legal_pairs), dtype=np.float32
+            )
 
         value = math.tanh(
             infos[0]["score"].pov(board.turn).score(mate_score=10000) / 400.0
@@ -56,9 +61,10 @@ def generate_game(engine, max_moves=60, depth=3):
         samples.append(
             (
                 np.array(board_to_tokens(board), dtype=np.uint8),
-                policy_grid,
+                legal_pairs,
+                policy_pairs,
+                policy_probs,
                 value,
-                legal_mask_grid(board),
             )
         )
 
@@ -84,6 +90,7 @@ def worker_generate_games(engine_path, num_games, max_moves=60, depth=3):
 
 def generate_pretrain_data(
     stockfish_path,
+    replay,
     total_games,
     games_per_task=50,
     max_workers=None,
@@ -97,7 +104,6 @@ def generate_pretrain_data(
 
     print(f"Generating {total_games} expert games using {max_workers} CPU cores...")
 
-    pretrain_samples = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         for i in tqdm(
             range(0, len(task_game_counts), max_workers), desc="Parallel Gen"
@@ -110,9 +116,7 @@ def generate_pretrain_data(
             ]
             for f in concurrent.futures.as_completed(futures):
                 try:
-                    pretrain_samples.extend(f.result())
+                    replay.extend_pretrain(f.result())
                 except Exception:
                     pass
             gc.collect()
-
-    return pretrain_samples
