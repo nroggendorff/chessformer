@@ -466,7 +466,6 @@ INDEX_HTML = r"""
       <div id="board-bg"></div>
       <div id="board-pieces"></div>
 
-      <!-- Promotion Modal Overlay -->
       <div id="promotion-overlay">
         <div class="promotion-dialog">
           <h3>Promote Pawn</h3>
