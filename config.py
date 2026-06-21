@@ -12,17 +12,17 @@ class Config:
     pretrain_games: int = 15000
     pretrain_games_per_task: int = 50
     pretrain_max_moves: int = 60
-    pretrain_depth: int = 3
-    pretrain_samples_target: int = 12000 * 512
+    pretrain_depth: int = 8
+    pretrain_samples_target: int = 3000 * 512
     pretrain_batch_size: int = 512
 
-    self_play_iterations: int = 100
-    self_play_games_per_iter: int = 128
-    self_play_mcts_sims: int = 40
-    self_play_max_moves: int = 120
+    self_play_iterations: int = 30
+    self_play_games_per_iter: int = 32
+    self_play_mcts_sims: int = 120
+    self_play_max_moves: int = 60
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 512
-    self_play_gradient_steps: int = 15
+    self_play_gradient_steps: int = 2
     self_play_mix_ratio: float = 0.5
 
     pretrain_capacity: int = 500000

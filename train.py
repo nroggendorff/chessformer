@@ -27,14 +27,19 @@ def main():
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
     )
     scaler = torch.amp.GradScaler(device.type) if device.type == "cuda" else None
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt,
+        T_max=config.pretrain_steps
+        + config.self_play_iterations * config.self_play_gradient_steps,
+    )
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
 
     print(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    run_pretraining(train_model, opt, scaler, replay, device, config)
-    run_self_play(model, train_model, opt, scaler, replay, device, config)
+    run_pretraining(train_model, opt, scaler, scheduler, replay, device, config)
+    run_self_play(model, train_model, opt, scaler, scheduler, replay, device, config)
 
     model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
     os.makedirs(model_dir, exist_ok=True)

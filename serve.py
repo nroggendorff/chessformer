@@ -153,13 +153,13 @@ INDEX_HTML = r"""
 
   <style>
     :root {
-      --bg-color:
-      --panel-bg:
-      --text-main:
-      --text-light:
-      --accent:
-      --accent-hover:
-      --border-color:
+      --bg-color: #222222;
+      --panel-bg: #333333;
+      --text-main: #eeeeee;
+      --text-light: #ffffff;
+      --accent: #007bff;
+      --accent-hover: #0056b3;
+      --border-color: #444444;
       --board-size: 480px;
     }
 
@@ -176,41 +176,41 @@ INDEX_HTML = r"""
       margin: 0;
     }
 
-
+    #layout {
       display: flex;
       gap: 24px;
       align-items: stretch;
     }
 
-
+    #evalbar-container {
       width: 24px;
-      background:
+      background: var(--panel-bg);
       border-radius: 4px;
       overflow: hidden;
       position: relative;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     }
 
-
+    #evalfill {
       position: absolute;
       bottom: 0;
       width: 100%;
-      background:
+      background: #cccccc;
       transition: height 0.3s ease-in-out;
     }
 
-
+    #evaltext {
       position: absolute;
       top: 6px;
       width: 100%;
       text-align: center;
       font-size: 10px;
       font-weight: bold;
-      color:
+      color: #222222;
       z-index: 2;
     }
 
-
+    #board-container {
       position: relative;
       width: var(--board-size);
       height: var(--board-size);
@@ -219,7 +219,7 @@ INDEX_HTML = r"""
       overflow: hidden;
     }
 
-
+    #board-bg {
       position: absolute;
       left: 0;
       top: 0;
@@ -227,13 +227,13 @@ INDEX_HTML = r"""
       height: 100%;
     }
 
-
+    #board-bg svg {
       border-radius: 4px;
       width: 100%;
       height: 100%;
     }
 
-
+    #board-pieces {
       position: absolute;
       left: 0;
       top: 0;
@@ -315,6 +315,7 @@ INDEX_HTML = r"""
       left: 4px;
     }
 
+    #promotion-overlay {
       position: absolute;
       top: 0;
       left: 0;
@@ -354,7 +355,7 @@ INDEX_HTML = r"""
       width: 50px;
       height: 50px;
       padding: 4px;
-      background:
+      background: transparent;
       border-radius: 4px;
       border: 1px solid var(--border-color);
       cursor: pointer;
@@ -367,7 +368,7 @@ INDEX_HTML = r"""
     }
 
     .promotion-options button:hover {
-      background:
+      background: var(--border-color);
       transform: scale(1.1);
     }
 
@@ -377,7 +378,7 @@ INDEX_HTML = r"""
     }
 
     .cancel-btn {
-      background:
+      background: #d9534f !important;
       color: white !important;
       font-size: 14px !important;
       padding: 10px 20px !important;
@@ -386,10 +387,10 @@ INDEX_HTML = r"""
     }
 
     .cancel-btn:hover {
-      background:
+      background: #c9302c !important;
     }
 
-
+    #sidebar {
       display: flex;
       flex-direction: column;
       justify-content: center;
@@ -403,15 +404,15 @@ INDEX_HTML = r"""
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     }
 
-
+    #status {
       font-size: 22px;
       font-weight: bold;
       color: var(--text-light);
       margin: 0 0 8px 0;
     }
 
-
-      color:
+    #error {
+      color: #d9534f;
       min-height: 20px;
       font-size: 14px;
       font-weight: bold;
@@ -426,7 +427,7 @@ INDEX_HTML = r"""
 
     button {
       padding: 14px;
-      background:
+      background: var(--border-color);
       color: var(--text-main);
       border: none;
       border-radius: 4px;
@@ -440,13 +441,13 @@ INDEX_HTML = r"""
     }
 
     button:hover {
-      background:
+      background: #555555;
       color: var(--text-light);
     }
 
     button.primary {
       background: var(--accent);
-      color:
+      color: var(--text-light);
     }
 
     button.primary:hover {

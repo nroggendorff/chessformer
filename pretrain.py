@@ -4,7 +4,7 @@ from data_generation import generate_pretrain_data
 from training import train_batch
 
 
-def run_pretraining(model, opt, scaler, replay, device, config):
+def run_pretraining(model, opt, scaler, scheduler, replay, device, config):
     generate_pretrain_data(config, replay)
     print(f"Generated {len(replay.pretrain_buf)} pretraining positions.")
 
@@ -20,6 +20,7 @@ def run_pretraining(model, opt, scaler, replay, device, config):
             replay.sample(config.pretrain_batch_size, mix_ratio=1.0),
             device,
         )
+        scheduler.step()
         pbar.set_postfix(
             loss=f"{loss:.3f}", policy=f"{p_loss:.3f}", value=f"{v_loss:.3f}"
         )

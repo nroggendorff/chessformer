@@ -28,7 +28,7 @@ def generate_game(engine, max_moves=60, depth=3):
             if "pv" in info and len(info["pv"]) > 0:
                 move = info["pv"][0]
                 sc = info["score"].pov(board.turn).score(mate_score=10000)
-                scores[move] = math.exp(max(min(sc, 1000), -1000) / 100.0)
+                scores[move] = math.exp(max(min(sc, 1000), -1000) / 250.0)
 
         legal_pairs = np.array(
             list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8

@@ -105,7 +105,7 @@ def generate_self_play_data(
         return [s for f in concurrent.futures.as_completed(futures) for s in f.result()]
 
 
-def run_self_play(model, train_model, opt, scaler, replay, device, config):
+def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, config):
     use_multiprocessing = device.type != "cuda"
     max_workers = (
         min(config.max_workers, config.self_play_games_per_iter)
@@ -152,19 +152,21 @@ def run_self_play(model, train_model, opt, scaler, replay, device, config):
             )
 
             if len(replay.pretrain_buf) > 0 or len(replay.rl_buf) > 0:
-                losses = [
-                    train_batch(
-                        train_model,
-                        opt,
-                        scaler,
-                        replay.sample(
-                            config.self_play_batch_size,
-                            mix_ratio=config.self_play_mix_ratio,
-                        ),
-                        device,
+                losses = []
+                for _ in range(config.self_play_gradient_steps):
+                    losses.append(
+                        train_batch(
+                            train_model,
+                            opt,
+                            scaler,
+                            replay.sample(
+                                config.self_play_batch_size,
+                                mix_ratio=config.self_play_mix_ratio,
+                            ),
+                            device,
+                        )
                     )
-                    for _ in range(config.self_play_gradient_steps)
-                ]
+                    scheduler.step()
                 avg_loss, avg_p, avg_v = (
                     sum(x[i] for x in losses) / len(losses) for i in range(3)
                 )
