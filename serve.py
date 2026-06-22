@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 
 import chess
 import chess.engine
@@ -12,7 +13,7 @@ from config import Config
 from mcts import MCTSNode, batched_mcts_sim, root_converged, root_policy_from_visits
 from model import ChessNet
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=os.path.dirname(os.path.abspath(__file__)))
 state = {}
 
 

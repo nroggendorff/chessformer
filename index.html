@@ -23,6 +23,7 @@
       --border-color: #393946;
       --board-size: 480px;
       --sq: 60px;
+      --radius: 11px;
     }
 
     * {
@@ -82,7 +83,7 @@
     #evalbar-container {
       width: 22px;
       background: var(--panel-bg);
-      border-radius: 6px;
+      border-radius: var(--radius);
       overflow: hidden;
       position: relative;
       box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
@@ -101,11 +102,7 @@
       position: relative;
       width: var(--board-size);
       height: var(--board-size);
-      box-shadow:
-        0 10px 30px rgba(0, 0, 0, 0.55),
-        0 0 0 6px #2c2014,
-        0 0 0 7px var(--accent);
-      border-radius: 6px;
+      border-radius: var(--radius);
       overflow: hidden;
     }
 
@@ -271,7 +268,7 @@
     .promotion-dialog {
       background: var(--panel-bg-alt);
       border: 1px solid var(--border-color);
-      border-radius: 10px;
+      border-radius: var(--radius);
       padding: 22px;
       text-align: center;
       box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6);
@@ -297,7 +294,7 @@
       height: 52px;
       padding: 5px;
       background: var(--panel-bg);
-      border-radius: 6px;
+      border-radius: var(--radius);
       border: 1px solid var(--border-color);
       cursor: pointer;
       display: flex;
@@ -348,110 +345,16 @@
     .panel {
       background: var(--panel-bg);
       border: 1px solid var(--border-color);
-      border-radius: 8px;
+      border-radius: var(--radius);
       padding: 16px 18px;
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
     }
 
-    #turn-indicator {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-    }
-
-    #turn-dot {
-      width: 11px;
-      height: 11px;
-      border-radius: 50%;
-      background: #fff;
-      flex: none;
-      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
-      transition: background 0.2s;
-    }
-
-    #status {
-      font-size: 18px;
-      font-weight: 700;
-      color: var(--text-light);
-    }
-
-    #error {
-      color: var(--danger);
-      min-height: 16px;
-      font-size: 13px;
-      font-weight: 600;
-      margin-top: 6px;
-    }
-
-    #move-quality {
-      display: none;
-      margin-top: 8px;
-      font-size: 12px;
-      font-weight: 700;
-      padding: 5px 9px;
-      border-radius: 5px;
-      width: fit-content;
-    }
-
-    #move-quality.show {
-      display: inline-block;
-    }
-
-    #move-quality.q-inaccuracy {
-      background: rgba(217, 194, 90, 0.15);
-      color: #d9c25a;
-    }
-
-    #move-quality.q-mistake {
-      background: rgba(224, 149, 76, 0.15);
-      color: #e0954c;
-    }
-
-    #move-quality.q-blunder {
-      background: rgba(224, 82, 76, 0.15);
-      color: var(--danger);
-    }
-
-    .captured-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 26px;
-    }
-
-    .captured-row + .captured-row {
-      margin-top: 10px;
-    }
-
-    .captured-label {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.4px;
-      color: var(--text-dim);
-      width: 76px;
-      flex: none;
-    }
-
-    .captured-icons {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 1px;
-    }
-
-    .captured-icons svg {
-      width: 20px;
-      height: 20px;
-      opacity: 0.92;
-    }
-
-    .captured-icons:empty::after {
-      content: "—";
-      color: var(--text-dim);
-      font-size: 12px;
-    }
-
     #history-panel {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
       padding: 12px 0 12px 18px;
     }
 
@@ -466,7 +369,8 @@
     }
 
     #history-scroll {
-      max-height: 150px;
+      flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding-right: 12px;
       font-size: 13px;
@@ -533,7 +437,7 @@
       background: var(--panel-bg-alt);
       color: var(--text-main);
       border: 1px solid var(--border-color);
-      border-radius: 6px;
+      border-radius: var(--radius);
       font-size: 14px;
       font-weight: 700;
       cursor: pointer;
@@ -604,34 +508,14 @@
       </div>
 
       <div id="sidebar">
-        <div class="panel" id="status-panel">
-          <div id="turn-indicator">
-            <span id="turn-dot"></span>
-            <span id="status">Loading...</span>
-          </div>
-          <div id="error"></div>
-          <div id="move-quality"></div>
-        </div>
-
-        <div class="panel" id="captured-panel">
-          <div class="captured-row">
-            <span class="captured-label">White lost</span>
-            <div class="captured-icons" id="captured-white"></div>
-          </div>
-          <div class="captured-row">
-            <span class="captured-label">Black lost</span>
-            <div class="captured-icons" id="captured-black"></div>
-          </div>
+        <div class="panel btn-row">
+          <button type="button" id="newgame" class="primary">New Game</button>
+          <button type="button" id="undo">Undo Move</button>
         </div>
 
         <div class="panel" id="history-panel">
           <h4>Moves</h4>
           <div id="history-scroll"></div>
-        </div>
-
-        <div class="panel btn-row">
-          <button type="button" id="newgame" class="primary">New Game</button>
-          <button type="button" id="undo">Undo Move</button>
         </div>
       </div>
     </div>
@@ -873,11 +757,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ move: uci }),
       });
-      const data = await response.json();
-      document.getElementById("error").textContent = response.ok
-        ? ""
-        : data.error || "Invalid move";
-      render(data);
+      render(await response.json());
     }
 
     async function attemptMove(piece, startSquare, target) {
@@ -992,18 +872,6 @@
         }
       });
 
-    function renderCaptured(captured) {
-      ["white", "black"].forEach((color) => {
-        const el = document.getElementById("captured-" + color);
-        el.innerHTML = "";
-        (captured[color] || []).forEach((symbol) => {
-          const span = document.createElement("span");
-          span.innerHTML = PIECE_SVG[symbol];
-          el.appendChild(span.firstChild);
-        });
-      });
-    }
-
     function renderHistory(history) {
       const el = document.getElementById("history-scroll");
       el.innerHTML = "";
@@ -1070,16 +938,12 @@
 
       if (data.moves && data.moves.length) {
         animateMoves(data.moves, data.pieces, data.check_square);
+      } else if (document.getElementById("board-pieces").children.length) {
+        reconcile(data.pieces, data.check_square);
       } else {
         fullRebuild(data.pieces, data.check_square);
       }
 
-      document.getElementById("status").textContent = data.status;
-      document.getElementById("error").textContent = data.error || "";
-      document.getElementById("turn-dot").style.background =
-        data.status.startsWith("Black") ? "#1a1a1a" : "#ffffff";
-
-      renderCaptured(data.captured || { white: [], black: [] });
       renderHistory(data.history || []);
 
       const pct =
@@ -1090,21 +954,6 @@
           : 50 + 50 * Math.tanh(data.eval.cp / 400);
 
       document.getElementById("evalfill").style.height = pct + "%";
-
-      const qualityEl = document.getElementById("move-quality");
-      const humanMove = data.moves && data.moves[0];
-      qualityEl.className = "";
-      if (humanMove && humanMove.quality) {
-        qualityEl.classList.add("show", "q-" + humanMove.quality);
-        qualityEl.textContent =
-          humanMove.quality[0].toUpperCase() +
-          humanMove.quality.slice(1) +
-          " (-" +
-          (humanMove.cp_loss / 100).toFixed(1) +
-          ")";
-      } else {
-        qualityEl.textContent = "";
-      }
     }
 
     async function refresh() {
