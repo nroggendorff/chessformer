@@ -9,7 +9,7 @@ import torch
 from flask import Flask, jsonify, render_template, request
 from safetensors.torch import load_file
 
-from config import Config
+from config import Config, get_device
 from mcts import MCTSNode, batched_mcts_sim, root_converged, root_policy_from_visits
 from model import ChessNet
 
@@ -21,7 +21,7 @@ def load_model(checkpoint_path, device, config):
     model = ChessNet(
         d_model=config.d_model, nhead=config.nhead, enc_layers=config.enc_layers
     ).to(device)
-    model.load_state_dict(load_file(checkpoint_path, device=device.type))
+    model.load_state_dict(load_file(checkpoint_path, device="cpu"))
     model.eval()
     return model
 
@@ -295,7 +295,7 @@ def main():
     args = parser.parse_args()
 
     config = Config(stockfish_path=args.stockfish_path)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     state["board"] = chess.Board()
     state["model"] = load_model(args.checkpoint, device, config)
     state["device"] = device

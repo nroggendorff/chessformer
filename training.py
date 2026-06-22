@@ -27,7 +27,7 @@ def train_batch(model, opt, scaler, samples, device):
     opt.zero_grad(set_to_none=True)
     with torch.autocast(
         device_type=device.type,
-        dtype=torch.float16 if device.type == "cuda" else torch.bfloat16,
+        dtype=torch.float16 if device.type in ("cuda", "mps") else torch.bfloat16,
     ):
         logits, value_pred = model(boards)
         logits = logits.masked_fill(~legal_mask, -1e4)

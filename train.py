@@ -3,7 +3,7 @@ import os
 import torch
 from safetensors.torch import save_file
 
-from config import Config
+from config import Config, get_device
 from model import ChessNet
 from pretrain import run_pretraining
 from replay_buffer import DualRingBuffer
@@ -12,7 +12,7 @@ from self_play import run_self_play
 
 def main():
     config = Config()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True

@@ -56,9 +56,9 @@ def generate_self_play_data(
     max_workers=None,
     executor=None,
 ):
-    if device.type == "cuda":
+    if device.type in ("cuda", "mps"):
         with torch.autocast(
-            device_type="cuda", dtype=torch.float16
+            device_type=device.type, dtype=torch.float16
         ), torch.inference_mode():
             return play_games_batched(
                 model,
@@ -106,7 +106,7 @@ def generate_self_play_data(
 
 
 def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, config):
-    use_multiprocessing = device.type != "cuda"
+    use_multiprocessing = device.type not in ("cuda", "mps")
     max_workers = (
         min(config.max_workers, config.self_play_games_per_iter)
         if use_multiprocessing
@@ -181,4 +181,6 @@ def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, co
 
             if device.type == "cuda":
                 torch.cuda.empty_cache()
+            elif device.type == "mps":
+                torch.mps.empty_cache()
             gc.collect()
