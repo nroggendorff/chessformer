@@ -1,0 +1,1143 @@
+<head>
+  <meta charset="utf-8" />
+  <title>ChessNet</title>
+  <link
+    rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>♞</text></svg>"
+  />
+
+  <style>
+    :root {
+      --bg-top: #181820;
+      --bg-bottom: #11111600;
+      --panel-bg: #22222c;
+      --panel-bg-alt: #2a2a36;
+      --text-main: #e7e5e1;
+      --text-dim: #9a98a3;
+      --text-light: #ffffff;
+      --accent: #c9a227;
+      --accent-hover: #e0b73a;
+      --accent-text: #1a1408;
+      --danger: #e0524c;
+      --danger-hover: #c84540;
+      --border-color: #393946;
+      --board-size: 480px;
+      --sq: 60px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      background: radial-gradient(circle at 50% -10%, #232330, #14141a 65%);
+      color: var(--text-main);
+      font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+        sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px 12px;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+    }
+
+    #topbar {
+      text-align: center;
+      user-select: none;
+    }
+
+    #topbar h1 {
+      margin: 0;
+      font-size: 26px;
+      letter-spacing: 0.5px;
+      color: var(--text-light);
+      font-weight: 700;
+    }
+
+    #topbar h1 .crown {
+      color: var(--accent);
+    }
+
+    #topbar p {
+      margin: 4px 0 0 0;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    #layout {
+      display: flex;
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    #evalbar-container {
+      width: 22px;
+      background: var(--panel-bg);
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+      border: 1px solid var(--border-color);
+    }
+
+    #evalfill {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      background: linear-gradient(180deg, #f3f1ec, #d9d6cd);
+      transition: height 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    #board-container {
+      position: relative;
+      width: var(--board-size);
+      height: var(--board-size);
+      box-shadow:
+        0 10px 30px rgba(0, 0, 0, 0.55),
+        0 0 0 6px #2c2014,
+        0 0 0 7px var(--accent);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    #board-bg {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    #board-bg svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #board-highlights {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 6;
+    }
+
+    .sq-highlight {
+      position: absolute;
+      width: var(--sq);
+      height: var(--sq);
+    }
+
+    .sq-selected {
+      background: rgba(255, 255, 255, 0.22);
+      box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.35);
+    }
+
+    .sq-target::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 18px;
+      height: 18px;
+      margin: -9px;
+      border-radius: 50%;
+      background: rgba(20, 20, 20, 0.32);
+    }
+
+    .sq-capture::after {
+      content: "";
+      position: absolute;
+      inset: 5px;
+      border-radius: 50%;
+      border: 4px solid rgba(224, 82, 76, 0.7);
+    }
+
+    #board-pieces {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .piece {
+      position: absolute;
+      width: var(--sq);
+      height: var(--sq);
+      cursor: grab;
+      user-select: none;
+      pointer-events: auto;
+      filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.45));
+      transition:
+        left 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+        top 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.18s ease-out,
+        transform 0.18s ease-out;
+    }
+
+    .piece svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .piece.dragging {
+      z-index: 100;
+      cursor: grabbing;
+      transition: none;
+      transform: scale(1.15);
+      filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.6));
+    }
+
+    .piece.in-check {
+      background: radial-gradient(
+        circle,
+        rgba(224, 82, 76, 1) 0%,
+        rgba(224, 82, 76, 0.4) 60%,
+        rgba(0, 0, 0, 0) 70%
+      );
+      border-radius: 50%;
+      animation: check-pulse 1.2s infinite alternate ease-in-out;
+    }
+
+    @keyframes check-pulse {
+      from {
+        filter: drop-shadow(0 0 4px rgba(224, 82, 76, 0.6));
+        background: radial-gradient(
+          circle,
+          rgba(224, 82, 76, 0.95) 0%,
+          rgba(224, 82, 76, 0.35) 60%,
+          rgba(0, 0, 0, 0) 70%
+        );
+      }
+      to {
+        filter: drop-shadow(0 0 14px rgba(224, 82, 76, 0.95));
+        background: radial-gradient(
+          circle,
+          rgba(224, 82, 76, 1) 0%,
+          rgba(224, 82, 76, 0.55) 60%,
+          rgba(0, 0, 0, 0) 70%
+        );
+      }
+    }
+
+    .coord {
+      position: absolute;
+      font-size: 11px;
+      font-weight: 700;
+      pointer-events: none;
+      user-select: none;
+      z-index: 5;
+    }
+
+    .coord-file {
+      bottom: 3px;
+      right: 5px;
+    }
+
+    .coord-rank {
+      top: 4px;
+      left: 4px;
+    }
+
+    #promotion-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(10, 10, 14, 0.78);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+      backdrop-filter: blur(2px);
+    }
+
+    .promotion-dialog {
+      background: var(--panel-bg-alt);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 22px;
+      text-align: center;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6);
+      width: 250px;
+    }
+
+    .promotion-dialog h3 {
+      margin: 0 0 16px 0;
+      color: var(--text-light);
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .promotion-options {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-bottom: 18px;
+    }
+
+    .promotion-options button {
+      width: 52px;
+      height: 52px;
+      padding: 5px;
+      background: var(--panel-bg);
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition:
+        background 0.15s,
+        border-color 0.15s,
+        transform 0.1s;
+    }
+
+    .promotion-options button:hover {
+      background: var(--accent-dim, rgba(201, 162, 39, 0.15));
+      border-color: var(--accent);
+      transform: scale(1.08);
+    }
+
+    .promo-icon {
+      width: 100%;
+      height: 100%;
+    }
+
+    .promo-icon svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .cancel-btn {
+      background: var(--danger) !important;
+      color: white !important;
+      font-size: 13px !important;
+      padding: 10px 18px !important;
+      width: auto !important;
+      display: inline-block;
+    }
+
+    .cancel-btn:hover {
+      background: var(--danger-hover) !important;
+    }
+
+    #sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 280px;
+    }
+
+    .panel {
+      background: var(--panel-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px 18px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    }
+
+    #turn-indicator {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    #turn-dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #fff;
+      flex: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+      transition: background 0.2s;
+    }
+
+    #status {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-light);
+    }
+
+    #error {
+      color: var(--danger);
+      min-height: 16px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 6px;
+    }
+
+    #move-quality {
+      display: none;
+      margin-top: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 5px 9px;
+      border-radius: 5px;
+      width: fit-content;
+    }
+
+    #move-quality.show {
+      display: inline-block;
+    }
+
+    #move-quality.q-inaccuracy {
+      background: rgba(217, 194, 90, 0.15);
+      color: #d9c25a;
+    }
+
+    #move-quality.q-mistake {
+      background: rgba(224, 149, 76, 0.15);
+      color: #e0954c;
+    }
+
+    #move-quality.q-blunder {
+      background: rgba(224, 82, 76, 0.15);
+      color: var(--danger);
+    }
+
+    .captured-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 26px;
+    }
+
+    .captured-row + .captured-row {
+      margin-top: 10px;
+    }
+
+    .captured-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: var(--text-dim);
+      width: 76px;
+      flex: none;
+    }
+
+    .captured-icons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1px;
+    }
+
+    .captured-icons svg {
+      width: 20px;
+      height: 20px;
+      opacity: 0.92;
+    }
+
+    .captured-icons:empty::after {
+      content: "—";
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
+    #history-panel {
+      padding: 12px 0 12px 18px;
+    }
+
+    #history-panel h4 {
+      margin: 0 0 8px 0;
+      padding-right: 18px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      font-weight: 700;
+    }
+
+    #history-scroll {
+      max-height: 150px;
+      overflow-y: auto;
+      padding-right: 12px;
+      font-size: 13px;
+      line-height: 1.9;
+    }
+
+    #history-scroll::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    #history-scroll::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 3px;
+    }
+
+    .history-row {
+      display: flex;
+      gap: 8px;
+      color: var(--text-main);
+    }
+
+    .history-row .num {
+      color: var(--text-dim);
+      width: 22px;
+      flex: none;
+      text-align: right;
+    }
+
+    .history-row .mv {
+      width: 64px;
+      flex: none;
+    }
+
+    .history-row.last-row .mv.last-mv {
+      font-weight: 700;
+    }
+
+    .mv.q-inaccuracy {
+      color: #d9c25a;
+    }
+
+    .mv.q-mistake {
+      color: #e0954c;
+    }
+
+    .mv.q-blunder {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .empty-history {
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    button {
+      padding: 12px;
+      background: var(--panel-bg-alt);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition:
+        background 0.15s,
+        color 0.15s,
+        border-color 0.15s;
+      width: 100%;
+    }
+
+    button:hover {
+      background: #34343f;
+      color: var(--text-light);
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: var(--accent-text);
+      border-color: var(--accent);
+    }
+
+    button.primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <div id="topbar">
+      <h1><span class="crown">♞</span> ChessNet</h1>
+      <p>Drag, or click a piece then a highlighted square, to move.</p>
+    </div>
+
+    <div id="layout">
+      <div id="evalbar-container">
+        <div id="evalfill" style="height: 50%"></div>
+      </div>
+
+      <div id="board-container">
+        <div id="board-bg"></div>
+        <div id="board-highlights"></div>
+        <div id="board-pieces"></div>
+
+        <div id="promotion-overlay">
+          <div class="promotion-dialog">
+            <h3>Promote Pawn</h3>
+            <div class="promotion-options">
+              <button data-piece="q" title="Queen">
+                <div class="promo-icon" id="promo-q"></div>
+              </button>
+              <button data-piece="r" title="Rook">
+                <div class="promo-icon" id="promo-r"></div>
+              </button>
+              <button data-piece="b" title="Bishop">
+                <div class="promo-icon" id="promo-b"></div>
+              </button>
+              <button data-piece="n" title="Knight">
+                <div class="promo-icon" id="promo-n"></div>
+              </button>
+            </div>
+            <button type="button" id="promotion-cancel" class="cancel-btn">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="sidebar">
+        <div class="panel" id="status-panel">
+          <div id="turn-indicator">
+            <span id="turn-dot"></span>
+            <span id="status">Loading...</span>
+          </div>
+          <div id="error"></div>
+          <div id="move-quality"></div>
+        </div>
+
+        <div class="panel" id="captured-panel">
+          <div class="captured-row">
+            <span class="captured-label">White lost</span>
+            <div class="captured-icons" id="captured-white"></div>
+          </div>
+          <div class="captured-row">
+            <span class="captured-label">Black lost</span>
+            <div class="captured-icons" id="captured-black"></div>
+          </div>
+        </div>
+
+        <div class="panel" id="history-panel">
+          <h4>Moves</h4>
+          <div id="history-scroll"></div>
+        </div>
+
+        <div class="panel btn-row">
+          <button type="button" id="newgame" class="primary">New Game</button>
+          <button type="button" id="undo">Undo Move</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script id="piece-svg-data" type="application/json">
+    {{ piece_svg_json | safe }}
+  </script>
+  <script>
+    const PIECE_SVG = JSON.parse(
+      document.getElementById("piece-svg-data").textContent,
+    );
+    const LIGHT_COLOR = "#f0d9b5";
+    const DARK_COLOR = "#b58863";
+    const SQ = 60;
+    const ANIM_MS = 220;
+
+    let pendingPromotion = null;
+    let legalMovesMap = {};
+    let selected = null;
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    function squarePos(square) {
+      const file = "abcdefgh".indexOf(square[0]);
+      const rank = parseInt(square[1]);
+      return { left: file * SQ, top: (8 - rank) * SQ };
+    }
+
+    function squareFromPoint(x, y) {
+      const rect = document
+        .getElementById("board-container")
+        .getBoundingClientRect();
+      const bx = x - rect.left;
+      const by = y - rect.top;
+      const file = Math.floor(bx / SQ);
+      const rank = 7 - Math.floor(by / SQ);
+      if (file < 0 || file > 7 || rank < 0 || rank > 7) return null;
+      return "abcdefgh"[file] + (rank + 1);
+    }
+
+    function pieceAt(square) {
+      return document.querySelector(
+        '#board-pieces .piece[data-square="' + square + '"]',
+      );
+    }
+
+    function setSquare(piece, square) {
+      piece.dataset.square = square;
+      const pos = squarePos(square);
+      piece.style.left = pos.left + "px";
+      piece.style.top = pos.top + "px";
+    }
+
+    function fadeOutAndRemove(piece) {
+      piece.style.opacity = "0";
+      piece.style.transform = "scale(0.5)";
+      setTimeout(() => piece.remove(), ANIM_MS);
+    }
+
+    function swapSymbol(piece, symbol) {
+      piece.dataset.symbol = symbol;
+      piece.innerHTML = PIECE_SVG[symbol];
+    }
+
+    function updateCheck(elem, symbol, square, checkSquare) {
+      const isKing = symbol === "K" || symbol === "k";
+      elem.classList.toggle("in-check", isKing && square === checkSquare);
+    }
+
+    function initCoordinates() {
+      const boardContainer = document.getElementById("board-container");
+
+      for (let r = 1; r <= 8; r++) {
+        const div = document.createElement("div");
+        div.className = "coord coord-rank";
+        div.textContent = String(r);
+        div.style.color = r % 2 === 0 ? DARK_COLOR : LIGHT_COLOR;
+        div.style.top = squarePos("a" + r).top + "px";
+        boardContainer.appendChild(div);
+      }
+
+      "abcdefgh".split("").forEach((f, i) => {
+        const div = document.createElement("div");
+        div.className = "coord coord-file";
+        div.textContent = f;
+        div.style.color = i % 2 !== 0 ? DARK_COLOR : LIGHT_COLOR;
+        div.style.left = squarePos(f + "1").left + "px";
+        boardContainer.appendChild(div);
+      });
+    }
+
+    function createPieceElement(symbol, square) {
+      const div = document.createElement("div");
+      div.className = "piece";
+      div.dataset.symbol = symbol;
+      div.dataset.square = square;
+      div.innerHTML = PIECE_SVG[symbol];
+      const pos = squarePos(square);
+      div.style.left = pos.left + "px";
+      div.style.top = pos.top + "px";
+      makeDraggable(div);
+      document.getElementById("board-pieces").appendChild(div);
+      return div;
+    }
+
+    function fullRebuild(pieces, checkSquare) {
+      document.getElementById("board-pieces").innerHTML = "";
+      pieces.forEach((p) => {
+        const el = createPieceElement(p.symbol, p.square);
+        updateCheck(el, p.symbol, p.square, checkSquare);
+      });
+    }
+
+    function reconcile(pieces, checkSquare) {
+      const elems = Array.from(
+        document.querySelectorAll("#board-pieces .piece"),
+      );
+      const used = new Set();
+
+      pieces.forEach((p) => {
+        let el = elems.find(
+          (e) =>
+            !used.has(e) &&
+            e.dataset.square === p.square &&
+            e.dataset.symbol === p.symbol,
+        );
+        if (!el)
+          el = elems.find((e) => !used.has(e) && e.dataset.symbol === p.symbol);
+
+        if (el) {
+          used.add(el);
+          if (el.dataset.square !== p.square) setSquare(el, p.square);
+          if (el.dataset.symbol !== p.symbol) swapSymbol(el, p.symbol);
+          updateCheck(el, p.symbol, p.square, checkSquare);
+        } else {
+          const fresh = createPieceElement(p.symbol, p.square);
+          updateCheck(fresh, p.symbol, p.square, checkSquare);
+        }
+      });
+
+      elems.forEach((e) => {
+        if (!used.has(e)) e.remove();
+      });
+    }
+
+    function applyMove(move) {
+      if (move.capture_square) {
+        const captured = pieceAt(move.capture_square);
+        if (captured && captured.dataset.square !== move.from)
+          fadeOutAndRemove(captured);
+      }
+
+      const mover = pieceAt(move.from) || pieceAt(move.to);
+      if (mover && mover.dataset.square !== move.to) setSquare(mover, move.to);
+      else if (mover) mover.dataset.square = move.to;
+
+      if (move.castle) {
+        const rook = pieceAt(move.rook_from);
+        if (rook) setSquare(rook, move.rook_to);
+      }
+
+      if (move.promotion && mover) {
+        const isWhite =
+          mover.dataset.symbol === mover.dataset.symbol.toUpperCase();
+        const finalSymbol = isWhite
+          ? move.promotion.toUpperCase()
+          : move.promotion;
+        setTimeout(() => swapSymbol(mover, finalSymbol), ANIM_MS);
+      }
+    }
+
+    async function animateMoves(moves, finalPieces, checkSquare) {
+      for (const mv of moves) {
+        applyMove(mv);
+        await sleep(ANIM_MS + 40);
+      }
+      reconcile(finalPieces, checkSquare);
+    }
+
+    function clearSelection() {
+      selected = null;
+      document.getElementById("board-highlights").innerHTML = "";
+    }
+
+    function renderHighlights() {
+      const layer = document.getElementById("board-highlights");
+      layer.innerHTML = "";
+
+      const selPos = squarePos(selected.square);
+      const selDiv = document.createElement("div");
+      selDiv.className = "sq-highlight sq-selected";
+      selDiv.style.left = selPos.left + "px";
+      selDiv.style.top = selPos.top + "px";
+      layer.appendChild(selDiv);
+
+      selected.targets.forEach((sq) => {
+        const pos = squarePos(sq);
+        const dot = document.createElement("div");
+        dot.className =
+          "sq-highlight " + (pieceAt(sq) ? "sq-capture" : "sq-target");
+        dot.style.left = pos.left + "px";
+        dot.style.top = pos.top + "px";
+        layer.appendChild(dot);
+      });
+    }
+
+    function selectSquare(square) {
+      if (selected && selected.square === square) {
+        clearSelection();
+        return;
+      }
+      const targets = legalMovesMap[square] || [];
+      if (targets.length === 0) {
+        clearSelection();
+        return;
+      }
+      selected = { square, targets: new Set(targets) };
+      renderHighlights();
+    }
+
+    function showPromotionModal(color) {
+      const letters =
+        color === "white" ? ["Q", "R", "B", "N"] : ["q", "r", "b", "n"];
+      ["promo-q", "promo-r", "promo-b", "promo-n"].forEach((id, i) => {
+        document.getElementById(id).innerHTML = PIECE_SVG[letters[i]];
+      });
+      document.getElementById("promotion-overlay").style.display = "flex";
+    }
+
+    function hidePromotionModal() {
+      document.getElementById("promotion-overlay").style.display = "none";
+      pendingPromotion = null;
+    }
+
+    async function sendMove(uci) {
+      const response = await fetch("/api/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ move: uci }),
+      });
+      const data = await response.json();
+      document.getElementById("error").textContent = response.ok
+        ? ""
+        : data.error || "Invalid move";
+      render(data);
+    }
+
+    async function attemptMove(piece, startSquare, target) {
+      clearSelection();
+      piece.classList.remove("dragging");
+
+      const symbol = piece.dataset.symbol;
+      const isWhitePawnPromo =
+        symbol === "P" && startSquare[1] === "7" && target[1] === "8";
+      const isBlackPawnPromo =
+        symbol === "p" && startSquare[1] === "2" && target[1] === "1";
+
+      if (isWhitePawnPromo || isBlackPawnPromo) {
+        const pos = squarePos(target);
+        piece.style.left = pos.left + "px";
+        piece.style.top = pos.top + "px";
+        pendingPromotion = { startSquare, target, piece };
+        showPromotionModal(isWhitePawnPromo ? "white" : "black");
+        return;
+      }
+
+      setSquare(piece, target);
+      await sendMove(startSquare + target);
+    }
+
+    async function handlePromotionSelection(pieceChar) {
+      if (!pendingPromotion) return;
+      const { startSquare, target } = pendingPromotion;
+      hidePromotionModal();
+      await sendMove(startSquare + target + pieceChar);
+    }
+
+    function makeDraggable(piece) {
+      piece.addEventListener("mousedown", (e) => {
+        if (pendingPromotion) return;
+
+        const startSquare = piece.dataset.square;
+
+        if (
+          selected &&
+          selected.square !== startSquare &&
+          selected.targets.has(startSquare)
+        ) {
+          e.preventDefault();
+          const mover = pieceAt(selected.square);
+          if (mover) attemptMove(mover, selected.square, startSquare);
+          return;
+        }
+
+        selectSquare(startSquare);
+
+        const rect = piece.getBoundingClientRect();
+        const ox = e.clientX - rect.left;
+        const oy = e.clientY - rect.top;
+        const downX = e.clientX;
+        const downY = e.clientY;
+
+        piece.classList.add("dragging");
+
+        function move(ev) {
+          const board = document
+            .getElementById("board-container")
+            .getBoundingClientRect();
+          piece.style.left = ev.clientX - board.left - ox + "px";
+          piece.style.top = ev.clientY - board.top - oy + "px";
+        }
+
+        async function up(ev) {
+          document.removeEventListener("mousemove", move);
+          document.removeEventListener("mouseup", up);
+
+          const dragged =
+            Math.hypot(ev.clientX - downX, ev.clientY - downY) > 4;
+          piece.classList.remove("dragging");
+
+          if (!dragged) {
+            const pos = squarePos(startSquare);
+            piece.style.left = pos.left + "px";
+            piece.style.top = pos.top + "px";
+            return;
+          }
+
+          const target = squareFromPoint(ev.clientX, ev.clientY);
+          if (!target || target === startSquare) {
+            const pos = squarePos(startSquare);
+            piece.style.left = pos.left + "px";
+            piece.style.top = pos.top + "px";
+            clearSelection();
+            return;
+          }
+
+          await attemptMove(piece, startSquare, target);
+        }
+
+        document.addEventListener("mousemove", move);
+        document.addEventListener("mouseup", up);
+      });
+    }
+
+    document
+      .getElementById("board-container")
+      .addEventListener("click", (e) => {
+        if (!selected || pendingPromotion) return;
+        const square = squareFromPoint(e.clientX, e.clientY);
+        if (!square) return;
+
+        if (selected.targets.has(square)) {
+          const mover = pieceAt(selected.square);
+          if (mover) attemptMove(mover, selected.square, square);
+        } else if (square !== selected.square) {
+          clearSelection();
+        }
+      });
+
+    function renderCaptured(captured) {
+      ["white", "black"].forEach((color) => {
+        const el = document.getElementById("captured-" + color);
+        el.innerHTML = "";
+        (captured[color] || []).forEach((symbol) => {
+          const span = document.createElement("span");
+          span.innerHTML = PIECE_SVG[symbol];
+          el.appendChild(span.firstChild);
+        });
+      });
+    }
+
+    function renderHistory(history) {
+      const el = document.getElementById("history-scroll");
+      el.innerHTML = "";
+
+      if (history.length === 0) {
+        el.innerHTML = '<div class="empty-history">No moves yet</div>';
+        return;
+      }
+
+      const suffix = { inaccuracy: "?!", mistake: "?", blunder: "??" };
+
+      for (let i = 0; i < history.length; i += 2) {
+        const row = document.createElement("div");
+        const isLastRow = i + 2 >= history.length;
+        row.className = "history-row" + (isLastRow ? " last-row" : "");
+
+        const num = document.createElement("span");
+        num.className = "num";
+        num.textContent = i / 2 + 1 + ".";
+        row.appendChild(num);
+
+        const white = document.createElement("span");
+        const whiteQuality = history[i].quality;
+        white.className =
+          "mv" +
+          (isLastRow && history.length % 2 === 1 ? " last-mv" : "") +
+          (whiteQuality ? " q-" + whiteQuality : "");
+        white.textContent =
+          history[i].san +
+          (suffix[whiteQuality] ? " " + suffix[whiteQuality] : "");
+        row.appendChild(white);
+
+        if (history[i + 1] !== undefined) {
+          const black = document.createElement("span");
+          const blackQuality = history[i + 1].quality;
+          black.className =
+            "mv" +
+            (isLastRow ? " last-mv" : "") +
+            (blackQuality ? " q-" + blackQuality : "");
+          black.textContent =
+            history[i + 1].san +
+            (suffix[blackQuality] ? " " + suffix[blackQuality] : "");
+          row.appendChild(black);
+        }
+
+        el.appendChild(row);
+      }
+
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function render(data) {
+      legalMovesMap = data.legal_moves || {};
+      clearSelection();
+
+      const tempDiv = document.createElement("div");
+      tempDiv.innerHTML = data.svg;
+      tempDiv.querySelectorAll("use").forEach((u) => {
+        const href = u.getAttribute("href") || u.getAttribute("xlink:href");
+        if (href && (href.startsWith("#white-") || href.startsWith("#black-")))
+          u.remove();
+      });
+      document.getElementById("board-bg").innerHTML = tempDiv.innerHTML;
+
+      if (data.moves && data.moves.length) {
+        animateMoves(data.moves, data.pieces, data.check_square);
+      } else {
+        fullRebuild(data.pieces, data.check_square);
+      }
+
+      document.getElementById("status").textContent = data.status;
+      document.getElementById("error").textContent = data.error || "";
+      document.getElementById("turn-dot").style.background =
+        data.status.startsWith("Black") ? "#1a1a1a" : "#ffffff";
+
+      renderCaptured(data.captured || { white: [], black: [] });
+      renderHistory(data.history || []);
+
+      const pct =
+        data.eval.mate !== undefined
+          ? data.eval.mate > 0
+            ? 100
+            : 0
+          : 50 + 50 * Math.tanh(data.eval.cp / 400);
+
+      document.getElementById("evalfill").style.height = pct + "%";
+
+      const qualityEl = document.getElementById("move-quality");
+      const humanMove = data.moves && data.moves[0];
+      qualityEl.className = "";
+      if (humanMove && humanMove.quality) {
+        qualityEl.classList.add("show", "q-" + humanMove.quality);
+        qualityEl.textContent =
+          humanMove.quality[0].toUpperCase() +
+          humanMove.quality.slice(1) +
+          " (-" +
+          (humanMove.cp_loss / 100).toFixed(1) +
+          ")";
+      } else {
+        qualityEl.textContent = "";
+      }
+    }
+
+    async function refresh() {
+      render(await (await fetch("/api/state")).json());
+    }
+
+    document.getElementById("newgame").addEventListener("click", async () => {
+      hidePromotionModal();
+      render(await (await fetch("/api/new", { method: "POST" })).json());
+    });
+
+    document.getElementById("undo").addEventListener("click", async () => {
+      hidePromotionModal();
+      render(await (await fetch("/api/undo", { method: "POST" })).json());
+    });
+
+    document
+      .getElementById("promotion-cancel")
+      .addEventListener("click", () => {
+        if (pendingPromotion) {
+          const { startSquare, piece } = pendingPromotion;
+          setSquare(piece, startSquare);
+        }
+        hidePromotionModal();
+      });
+
+    document.querySelectorAll(".promotion-options button").forEach((btn) => {
+      btn.addEventListener("click", () =>
+        handlePromotionSelection(btn.dataset.piece),
+      );
+    });
+
+    initCoordinates();
+    refresh();
+  </script>
+</body>
