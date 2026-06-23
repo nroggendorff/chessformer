@@ -5,13 +5,12 @@ import os
 import chess
 import chess.engine
 import chess.svg
-import torch
 from flask import Flask, jsonify, render_template, request
 from safetensors.torch import load_file
 
 from config import Config, get_device
-from mcts import MCTSNode, batched_mcts_sim, root_converged, root_policy_from_visits
 from model import ChessNet
+from policy import batched_policy_step
 
 app = Flask(__name__, template_folder=os.path.dirname(os.path.abspath(__file__)))
 state = {}
@@ -19,22 +18,19 @@ state = {}
 
 def load_model(checkpoint_path, device, config):
     model = ChessNet(
-        d_model=config.d_model, nhead=config.nhead, enc_layers=config.enc_layers
+        d_model=config.d_model,
+        nhead=config.nhead,
+        enc_layers=config.enc_layers,
+        heatmap_hidden=config.heatmap_hidden,
     ).to(device)
     model.load_state_dict(load_file(checkpoint_path, device="cpu"))
     model.eval()
     return model
 
 
-def bot_move(board, model, device, sims, cpuct=1.5):
-    root = MCTSNode()
-    batched_mcts_sim([root], [board], model, device, cpuct=cpuct, add_noise=False)
-    for _ in range(sims - 1):
-        if root_converged(root):
-            break
-        batched_mcts_sim([root], [board], model, device, cpuct=cpuct, add_noise=False)
-    moves, probs = root_policy_from_visits(root, temperature=0)
-    return moves[int(torch.argmax(probs).item())]
+def bot_move(board, model, device):
+    moves, _, _ = batched_policy_step([board], model, device, temperature=0.0)
+    return moves[0]
 
 
 def analyse(board):
@@ -267,7 +263,7 @@ def api_move():
         bot_mover = board.turn
         cp_before_bot = score.pov(bot_mover).score(mate_score=10000)
 
-        reply = bot_move(board, state["model"], state["device"], state["sims"])
+        reply = bot_move(board, state["model"], state["device"])
         moves.append(describe_move(board, reply))
         board.push(reply)
 
@@ -288,7 +284,6 @@ def main():
         "checkpoint", nargs="?", default="/opt/ml/model/chessformer.safetensors"
     )
     parser.add_argument("--stockfish-path", default="/usr/games/stockfish")
-    parser.add_argument("--sims", type=int, default=200)
     parser.add_argument("--eval-depth", type=int, default=14)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5000)
@@ -299,7 +294,6 @@ def main():
     state["board"] = chess.Board()
     state["model"] = load_model(args.checkpoint, device, config)
     state["device"] = device
-    state["sims"] = args.sims
     state["eval_depth"] = args.eval_depth
     state["engine"] = chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
     state["move_qualities"] = []

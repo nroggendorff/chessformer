@@ -64,6 +64,7 @@ def generate_game(engine, max_moves=60, depth=3):
                 policy_pairs,
                 policy_probs,
                 value,
+                1.0,
             )
         )
 

@@ -28,7 +28,7 @@ class Config:
 
     self_play_iterations: int = 30
     self_play_games_per_iter: int = 32
-    self_play_mcts_sims: int = 120
+    self_play_temperature: float = 1.0
     self_play_max_moves: int = 60
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 512
@@ -44,6 +44,7 @@ class Config:
     d_model: int = 128
     nhead: int = 4
     enc_layers: int = 2
+    heatmap_hidden: int = 128
 
     max_workers: int = None
 

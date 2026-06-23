@@ -18,7 +18,10 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
 
     model = ChessNet(
-        d_model=config.d_model, nhead=config.nhead, enc_layers=config.enc_layers
+        d_model=config.d_model,
+        nhead=config.nhead,
+        enc_layers=config.enc_layers,
+        heatmap_hidden=config.heatmap_hidden,
     ).to(device)
     train_model = (
         torch.compile(model, mode="reduce-overhead") if device.type == "cuda" else model

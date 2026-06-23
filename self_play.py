@@ -5,12 +5,14 @@ import multiprocessing as mp
 import random
 import time
 
+import chess
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from mcts import play_games_batched
+from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pair
 from model import ChessNet
+from policy import batched_policy_step
 from training import train_batch
 
 _GLOBAL_MODEL = None
@@ -22,8 +24,78 @@ def worker_init(device_type):
     _GLOBAL_MODEL = ChessNet().to(torch.device(device_type))
 
 
+def play_games_batched(
+    model, device, num_games=128, max_moves=120, sample_moves=15, temperature=1.0
+):
+    model.eval()
+    boards = [chess.Board() for _ in range(num_games)]
+    trajectories = [[] for _ in range(num_games)]
+    finished = [False] * num_games
+
+    for ply in range(max_moves):
+        active_indices = [i for i, f in enumerate(finished) if not f]
+        if not active_indices:
+            break
+
+        moves, values, _ = batched_policy_step(
+            [boards[i] for i in active_indices],
+            model,
+            device,
+            temperature=temperature if ply < sample_moves else 0.0,
+        )
+
+        for idx, original_i in enumerate(active_indices):
+            board, move, value = boards[original_i], moves[idx], values[idx]
+            trajectories[original_i].append(
+                {
+                    "board_tokens": board_to_tokens(board),
+                    "legal_pairs": np.array(
+                        list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
+                    ),
+                    "policy_pair": np.array(
+                        [
+                            (
+                                canonical_square(move.from_square, board),
+                                canonical_square(move.to_square, board),
+                            )
+                        ],
+                        dtype=np.uint8,
+                    ),
+                    "value_pred": value,
+                    "turn": board.turn,
+                }
+            )
+            board.push(move)
+            if board.is_game_over(claim_draw=True):
+                finished[original_i] = True
+
+    samples = []
+    for board, trajectory in zip(boards, trajectories):
+        out = board.outcome(claim_draw=True)
+        outcome_white = (
+            1.0
+            if out and out.winner == chess.WHITE
+            else -1.0 if out and out.winner == chess.BLACK else 0.0
+        )
+        for step in trajectory:
+            value_target = (
+                outcome_white if step["turn"] == chess.WHITE else -outcome_white
+            )
+            samples.append(
+                (
+                    np.array(step["board_tokens"], dtype=np.uint8),
+                    step["legal_pairs"],
+                    step["policy_pair"],
+                    np.array([1.0], dtype=np.float32),
+                    value_target,
+                    value_target - step["value_pred"],
+                )
+            )
+    return samples
+
+
 def worker_play_games(
-    state_dict, seed, num_games, sims, max_moves, sample_moves, device_type
+    state_dict, seed, num_games, max_moves, sample_moves, temperature, device_type
 ):
     global _GLOBAL_MODEL
     assert _GLOBAL_MODEL
@@ -35,38 +107,35 @@ def worker_play_games(
     _GLOBAL_MODEL.load_state_dict(state_dict)
     _GLOBAL_MODEL.eval()
 
-    with torch.inference_mode():
-        return play_games_batched(
-            _GLOBAL_MODEL,
-            device,
-            num_games=num_games,
-            sims=sims,
-            max_moves=max_moves,
-            sample_moves=sample_moves,
-        )
+    return play_games_batched(
+        _GLOBAL_MODEL,
+        device,
+        num_games=num_games,
+        max_moves=max_moves,
+        sample_moves=sample_moves,
+        temperature=temperature,
+    )
 
 
 def generate_self_play_data(
     model,
     total_games,
-    sims,
     max_moves,
     sample_moves,
+    temperature,
     device,
     max_workers=None,
     executor=None,
 ):
     if device.type in ("cuda", "mps"):
-        with torch.autocast(
-            device_type=device.type, dtype=torch.float16
-        ), torch.inference_mode():
+        with torch.autocast(device_type=device.type, dtype=torch.float16):
             return play_games_batched(
                 model,
                 device,
                 num_games=total_games,
-                sims=sims,
                 max_moves=max_moves,
                 sample_moves=sample_moves,
+                temperature=temperature,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -83,9 +152,9 @@ def generate_self_play_data(
                 state_dict,
                 base_seed + i,
                 count,
-                sims,
                 max_moves,
                 sample_moves,
+                temperature,
                 device.type,
             )
             for i, count in enumerate(counts)
@@ -142,9 +211,9 @@ def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, co
                 generate_self_play_data(
                     model,
                     config.self_play_games_per_iter,
-                    config.self_play_mcts_sims,
                     config.self_play_max_moves,
                     config.self_play_sample_moves,
+                    config.self_play_temperature,
                     device,
                     max_workers=max_workers,
                     executor=executor,
