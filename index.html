@@ -340,6 +340,7 @@
       flex-direction: column;
       gap: 12px;
       width: 280px;
+      height: var(--board-size);
     }
 
     .panel {
@@ -536,6 +537,8 @@
     let pendingPromotion = null;
     let legalMovesMap = {};
     let selected = null;
+    let captureLog = [];
+    let moveInFlight = false;
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -608,7 +611,7 @@
       });
     }
 
-    function createPieceElement(symbol, square) {
+    function createPieceElement(symbol, square, animateIn) {
       const div = document.createElement("div");
       div.className = "piece";
       div.dataset.symbol = symbol;
@@ -617,8 +620,18 @@
       const pos = squarePos(square);
       div.style.left = pos.left + "px";
       div.style.top = pos.top + "px";
+      if (animateIn) {
+        div.style.opacity = "0";
+        div.style.transform = "scale(0.5)";
+      }
       makeDraggable(div);
       document.getElementById("board-pieces").appendChild(div);
+      if (animateIn) {
+        requestAnimationFrame(() => {
+          div.style.opacity = "1";
+          div.style.transform = "scale(1)";
+        });
+      }
       return div;
     }
 
@@ -630,30 +643,70 @@
       });
     }
 
+    function popCaptureSquare(symbol) {
+      for (let i = captureLog.length - 1; i >= 0; i--) {
+        if (captureLog[i].symbol === symbol)
+          return captureLog.splice(i, 1)[0].square;
+      }
+      return null;
+    }
+
     function reconcile(pieces, checkSquare) {
       const elems = Array.from(
         document.querySelectorAll("#board-pieces .piece"),
       );
       const used = new Set();
+      const assigned = new Map();
 
       pieces.forEach((p) => {
-        let el = elems.find(
+        const el = elems.find(
           (e) =>
             !used.has(e) &&
             e.dataset.square === p.square &&
             e.dataset.symbol === p.symbol,
         );
-        if (!el)
-          el = elems.find((e) => !used.has(e) && e.dataset.symbol === p.symbol);
-
         if (el) {
           used.add(el);
+          assigned.set(p, el);
+        }
+      });
+
+      pieces
+        .filter((p) => !assigned.has(p))
+        .forEach((p) => {
+          const target = squarePos(p.square);
+          const nearest = elems
+            .filter((e) => !used.has(e) && e.dataset.symbol === p.symbol)
+            .map((e) => {
+              const pos = squarePos(e.dataset.square);
+              return {
+                e,
+                dist: Math.hypot(pos.left - target.left, pos.top - target.top),
+              };
+            })
+            .sort((a, b) => a.dist - b.dist)[0];
+          if (nearest) {
+            used.add(nearest.e);
+            assigned.set(p, nearest.e);
+          }
+        });
+
+      pieces.forEach((p) => {
+        const el = assigned.get(p);
+        if (el) {
           if (el.dataset.square !== p.square) setSquare(el, p.square);
           if (el.dataset.symbol !== p.symbol) swapSymbol(el, p.symbol);
           updateCheck(el, p.symbol, p.square, checkSquare);
         } else {
-          const fresh = createPieceElement(p.symbol, p.square);
-          updateCheck(fresh, p.symbol, p.square, checkSquare);
+          const sourceSquare = popCaptureSquare(p.symbol);
+          if (sourceSquare && sourceSquare !== p.square) {
+            const fresh = createPieceElement(p.symbol, sourceSquare);
+            updateCheck(fresh, p.symbol, p.square, checkSquare);
+            requestAnimationFrame(() => setSquare(fresh, p.square));
+          } else {
+            const fresh = createPieceElement(p.symbol, p.square, true);
+            updateCheck(fresh, p.symbol, p.square, checkSquare);
+          }
         }
       });
 
@@ -662,11 +715,29 @@
       });
     }
 
+    function reconcileInstant(pieces, checkSquare) {
+      const elems = Array.from(
+        document.querySelectorAll("#board-pieces .piece"),
+      );
+      elems.forEach((e) => (e.style.transition = "none"));
+      reconcile(pieces, checkSquare);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          elems.forEach((e) => (e.style.transition = ""));
+        });
+      });
+    }
+
     function applyMove(move) {
       if (move.capture_square) {
         const captured = pieceAt(move.capture_square);
-        if (captured && captured.dataset.square !== move.from)
+        if (captured && captured.dataset.square !== move.from) {
+          captureLog.push({
+            symbol: captured.dataset.symbol,
+            square: move.capture_square,
+          });
           fadeOutAndRemove(captured);
+        }
       }
 
       const mover = pieceAt(move.from) || pieceAt(move.to);
@@ -757,12 +828,17 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ move: uci }),
       });
-      render(await response.json());
+      return response.json();
     }
 
     async function attemptMove(piece, startSquare, target) {
       clearSelection();
       piece.classList.remove("dragging");
+
+      if (!(legalMovesMap[startSquare] || []).includes(target)) {
+        setSquare(piece, startSquare);
+        return;
+      }
 
       const symbol = piece.dataset.symbol;
       const isWhitePawnPromo =
@@ -780,19 +856,33 @@
       }
 
       setSquare(piece, target);
-      await sendMove(startSquare + target);
+      moveInFlight = true;
+      try {
+        const data = await sendMove(startSquare + target);
+        if (!data.moves || !data.moves.length) setSquare(piece, startSquare);
+        render(data);
+      } finally {
+        moveInFlight = false;
+      }
     }
 
     async function handlePromotionSelection(pieceChar) {
       if (!pendingPromotion) return;
-      const { startSquare, target } = pendingPromotion;
+      const { startSquare, target, piece } = pendingPromotion;
       hidePromotionModal();
-      await sendMove(startSquare + target + pieceChar);
+      moveInFlight = true;
+      try {
+        const data = await sendMove(startSquare + target + pieceChar);
+        if (!data.moves || !data.moves.length) setSquare(piece, startSquare);
+        render(data);
+      } finally {
+        moveInFlight = false;
+      }
     }
 
     function makeDraggable(piece) {
       piece.addEventListener("mousedown", (e) => {
-        if (pendingPromotion) return;
+        if (pendingPromotion || moveInFlight) return;
 
         const startSquare = piece.dataset.square;
 
@@ -860,7 +950,7 @@
     document
       .getElementById("board-container")
       .addEventListener("click", (e) => {
-        if (!selected || pendingPromotion) return;
+        if (!selected || pendingPromotion || moveInFlight) return;
         const square = squareFromPoint(e.clientX, e.clientY);
         if (!square) return;
 
@@ -924,7 +1014,7 @@
     }
 
     function render(data) {
-      legalMovesMap = data.legal_moves || {};
+      legalMovesMap = data.game_over ? {} : data.legal_moves || {};
       clearSelection();
 
       const tempDiv = document.createElement("div");
@@ -962,6 +1052,7 @@
 
     document.getElementById("newgame").addEventListener("click", async () => {
       hidePromotionModal();
+      captureLog = [];
       render(await (await fetch("/api/new", { method: "POST" })).json());
     });
 
