@@ -33,16 +33,17 @@ def train_batch(model, opt, scaler, samples, device):
         dtype=torch.float16 if device.type in ("cuda", "mps") else torch.bfloat16,
     ):
         heatmaps, value_pred = model(boards)
-        log_probs = joint_move_log_probs(heatmaps, legal_mask)
-        policy_loss = (
-            -(
-                target_policy.view(target_policy.size(0), -1)
-                * log_probs.view(log_probs.size(0), -1)
-            ).sum(dim=-1)
-            * weights
-        ).mean()
+        log_probs = joint_move_log_probs(heatmaps, legal_mask).clamp(min=-20.0)
+        flat_log_probs = log_probs.view(log_probs.size(0), -1)
+        flat_target = target_policy.view(target_policy.size(0), -1)
+        policy_loss = (-(flat_target * flat_log_probs).sum(dim=-1) * weights).mean()
+        entropy = -(flat_log_probs.exp() * flat_log_probs).sum(dim=-1).mean()
         value_loss = F.mse_loss(value_pred, target_values)
-        loss = policy_loss + 0.5 * value_loss
+        loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
+
+    if not torch.isfinite(loss):
+        opt.zero_grad(set_to_none=True)
+        return float("nan"), float("nan"), float("nan")
 
     if scaler is not None:
         scaler.scale(loss).backward()

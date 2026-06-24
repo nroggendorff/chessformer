@@ -41,7 +41,7 @@ class Config:
     rl_capacity: int = 100000
 
     lr: float = 3e-4
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-2
 
     d_model: int = 128
     nhead: int = 4
