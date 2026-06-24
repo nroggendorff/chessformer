@@ -25,7 +25,7 @@ class Config:
     pretrain_sample_moves: int = 8
     pretrain_traj_depth: int = 2
     pretrain_depth: int = 8
-    pretrain_samples_target: int = 3000 * 512
+    pretrain_samples_target: int = 1536000
     pretrain_batch_size: int = 512
 
     self_play_iterations: int = 30
