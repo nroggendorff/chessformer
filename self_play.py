@@ -11,6 +11,7 @@ import torch
 from tqdm import tqdm
 
 from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pair
+from evaluation import estimate_elo
 from model import ChessNet
 from policy import batched_policy_step
 from training import train_batch
@@ -202,11 +203,13 @@ def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, co
         else contextlib.nullcontext()
     )
 
+    elo_state = {}
+
     with executor_cm as executor:
         pbar = tqdm(
             range(config.self_play_iterations), desc="Self-Play RL Optimization"
         )
-        for _ in pbar:
+        for it in pbar:
             replay.extend_rl(
                 generate_self_play_data(
                     model,
@@ -218,6 +221,12 @@ def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, co
                     max_workers=max_workers,
                     executor=executor,
                 )
+            )
+
+            if (it + 1) % config.elo_eval_interval == 0:
+                estimate_elo(model, device, config, elo_state)
+            elo_postfix = (
+                {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
             )
 
             if len(replay.pretrain_buf) > 0 or len(replay.rl_buf) > 0:
@@ -244,9 +253,10 @@ def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, co
                     policy=f"{avg_p:.3f}",
                     value=f"{avg_v:.3f}",
                     rl_buf=len(replay.rl_buf),
+                    **elo_postfix,
                 )
             else:
-                pbar.set_postfix(rl_buf=len(replay.rl_buf))
+                pbar.set_postfix(rl_buf=len(replay.rl_buf), **elo_postfix)
 
             if device.type == "cuda":
                 torch.cuda.empty_cache()
