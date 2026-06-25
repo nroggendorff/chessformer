@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from safetensors.torch import load_file
 
 from encoding import BOARD_SQUARES, SEQ_LEN, VOCAB_SIZE
 
@@ -115,3 +116,15 @@ class ChessNet(nn.Module):
         ).squeeze(2)
         value = self.value_head(board.mean(dim=1)).squeeze(-1)
         return from_heatmaps, value
+
+
+def load_checkpoint(path, device, config):
+    model = ChessNet(
+        d_model=config.d_model,
+        nhead=config.nhead,
+        enc_layers=config.enc_layers,
+        heatmap_hidden=config.heatmap_hidden,
+    ).to(device)
+    model.load_state_dict(load_file(path, device="cpu"))
+    model.eval()
+    return model

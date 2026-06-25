@@ -175,7 +175,9 @@ def generate_self_play_data(
         return [s for f in concurrent.futures.as_completed(futures) for s in f.result()]
 
 
-def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, config):
+def run_self_play(
+    model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
+):
     use_multiprocessing = device.type not in ("cuda", "mps")
     max_workers = (
         min(config.max_workers, config.self_play_games_per_iter)
@@ -202,8 +204,6 @@ def run_self_play(model, train_model, opt, scaler, scheduler, replay, device, co
         if use_multiprocessing
         else contextlib.nullcontext()
     )
-
-    elo_state = {}
 
     with executor_cm as executor:
         pbar = tqdm(

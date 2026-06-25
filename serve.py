@@ -6,26 +6,13 @@ import chess
 import chess.engine
 import chess.svg
 from flask import Flask, jsonify, render_template, request
-from safetensors.torch import load_file
 
 from config import Config, get_device
-from model import ChessNet
+from model import load_checkpoint
 from policy import batched_policy_step
 
 app = Flask(__name__, template_folder=os.path.dirname(os.path.abspath(__file__)))
 state = {}
-
-
-def load_model(checkpoint_path, device, config):
-    model = ChessNet(
-        d_model=config.d_model,
-        nhead=config.nhead,
-        enc_layers=config.enc_layers,
-        heatmap_hidden=config.heatmap_hidden,
-    ).to(device)
-    model.load_state_dict(load_file(checkpoint_path, device="cpu"))
-    model.eval()
-    return model
 
 
 def bot_move(board, model, device):
@@ -292,7 +279,7 @@ def main():
     config = Config(stockfish_path=args.stockfish_path)
     device = get_device()
     state["board"] = chess.Board()
-    state["model"] = load_model(args.checkpoint, device, config)
+    state["model"] = load_checkpoint(args.checkpoint, device, config)
     state["device"] = device
     state["eval_depth"] = args.eval_depth
     state["engine"] = chess.engine.SimpleEngine.popen_uci(config.stockfish_path)

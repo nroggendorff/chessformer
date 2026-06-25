@@ -41,8 +41,14 @@ def main():
 
     print(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    run_pretraining(train_model, opt, scaler, scheduler, replay, device, config)
-    run_self_play(model, train_model, opt, scaler, scheduler, replay, device, config)
+    elo_state = {}
+
+    run_pretraining(
+        model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
+    )
+    run_self_play(
+        model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
+    )
 
     model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
     os.makedirs(model_dir, exist_ok=True)

@@ -6,9 +6,15 @@ import chess.engine
 from policy import batched_policy_step
 
 
-def play_eval_game(engine, model, device, model_is_white, max_moves, movetime):
+def clamp_uci_elo(engine, elo):
+    option = engine.options.get("UCI_Elo")
+    return elo if option is None else max(option.min, min(option.max, elo))
+
+
+def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
     board = chess.Board()
     mover = chess.WHITE if model_is_white else chess.BLACK
+    plies = 0
     for _ in range(max_moves):
         if board.is_game_over(claim_draw=True):
             break
@@ -16,19 +22,22 @@ def play_eval_game(engine, model, device, model_is_white, max_moves, movetime):
             moves, _, _ = batched_policy_step([board], model, device, temperature=0.0)
             board.push(moves[0])
         else:
-            board.push(engine.play(board, chess.engine.Limit(time=movetime)).move)
+            board.push(engine.play(board, limit).move)
+        plies += 1
 
     outcome = board.outcome(claim_draw=True)
-    return (
+    score = (
         0.5
         if outcome is None or outcome.winner is None
         else float(outcome.winner == mover)
     )
+    return {"score": score, "plies": plies}
 
 
 def estimate_elo(model, device, config, state):
     engine = chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
-    engine.configure({"UCI_LimitStrength": True, "UCI_Elo": config.elo_eval_anchor})
+    anchor = clamp_uci_elo(engine, config.elo_eval_anchor)
+    engine.configure({"UCI_LimitStrength": True, "UCI_Elo": anchor})
     model.eval()
 
     score = sum(
@@ -38,16 +47,14 @@ def estimate_elo(model, device, config, state):
             device,
             i % 2 == 0,
             config.elo_eval_max_moves,
-            config.elo_eval_movetime,
-        )
+            chess.engine.Limit(time=config.elo_eval_movetime),
+        )["score"]
         for i in range(config.elo_eval_games)
     )
     engine.quit()
 
     clipped = min(max(score, 0.5), config.elo_eval_games - 0.5)
-    elo = config.elo_eval_anchor + 400 * math.log10(
-        clipped / (config.elo_eval_games - clipped)
-    )
+    elo = anchor + 400 * math.log10(clipped / (config.elo_eval_games - clipped))
 
     state["elo_ema"] = (
         elo
