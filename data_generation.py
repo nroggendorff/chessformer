@@ -31,7 +31,7 @@ def move_scores(infos, board):
     }
 
 
-def position_label(infos, board):
+def position_label(infos, board, weight=1.0):
     scores = move_scores(infos, board)
     legal_pairs = np.array(
         list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
@@ -64,25 +64,21 @@ def position_label(infos, board):
         policy_pairs,
         policy_probs,
         value,
-        1.0,
+        weight,
     )
 
 
-def analyse_position(engine, board, depth):
-    infos = analyse_multipv(engine, board, depth)
-    return position_label(infos, board) if infos else None
-
-
-def play_low_depth_game(engine, max_moves=60, traj_depth=2):
-    board, positions = chess.Board(), []
+def generate_game(engine, max_moves=60, depth_range=(2, 8), sample_moves=None):
+    board, samples = chess.Board(), []
     for _ in range(max_moves):
         if board.is_game_over():
             break
-        infos = analyse_multipv(engine, board, traj_depth)
+        depth = random.randint(*depth_range)
+        infos = analyse_multipv(engine, board, depth)
         if not infos:
             break
 
-        positions.append(board.copy())
+        samples.append(position_label(infos, board, weight=depth / depth_range[1]))
         scores = move_scores(infos, board)
         board.push(
             random.choices(list(scores.keys()), weights=list(scores.values()), k=1)[0]
@@ -90,33 +86,17 @@ def play_low_depth_game(engine, max_moves=60, traj_depth=2):
             else random.choice(list(board.legal_moves))
         )
 
-    positions.append(board.copy())
-    return positions
-
-
-def generate_game(engine, max_moves=60, traj_depth=2, label_depth=8, sample_moves=None):
-    positions = play_low_depth_game(engine, max_moves, traj_depth)
-    sampled = random.sample(
-        positions, min(sample_moves or len(positions), len(positions))
-    )
-    return [
-        sample
-        for board in sampled
-        for sample in [analyse_position(engine, board, label_depth)]
-        if sample is not None
-    ]
+    return random.sample(samples, min(sample_moves or len(samples), len(samples)))
 
 
 def worker_generate_games(
-    engine_path, num_games, max_moves=60, traj_depth=2, label_depth=8, sample_moves=None
+    engine_path, num_games, max_moves=60, depth_range=(2, 8), sample_moves=None
 ):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
     samples = [
         sample
         for _ in range(num_games)
-        for sample in generate_game(
-            engine, max_moves, traj_depth, label_depth, sample_moves
-        )
+        for sample in generate_game(engine, max_moves, depth_range, sample_moves)
     ]
     engine.quit()
     return samples
@@ -144,8 +124,7 @@ def generate_pretrain_data(config, replay):
                     config.stockfish_path,
                     count,
                     config.pretrain_max_moves,
-                    config.pretrain_traj_depth,
-                    config.pretrain_depth,
+                    (config.pretrain_traj_depth, config.pretrain_depth),
                     config.pretrain_sample_moves,
                 )
                 for count in task_game_counts[i : i + max_workers]

@@ -28,6 +28,7 @@ def run_pretraining(
 
         if (step + 1) % eval_interval == 0:
             estimate_elo(model, device, config, elo_state)
+            pbar.unpause()
         elo_postfix = (
             {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
         )
