@@ -37,11 +37,11 @@ class Config:
     self_play_gradient_steps: int = 2
     self_play_mix_ratio: float = 0.5
 
-    elo_eval_interval: int = 25
-    elo_eval_games: int = 6
+    elo_eval_count: int = 8
+    elo_eval_games: int = 4
     elo_eval_anchor: int = 1320
-    elo_eval_max_moves: int = 80
-    elo_eval_movetime: float = 0.1
+    elo_eval_max_moves: int = 60
+    elo_eval_depth: int = 1
     elo_eval_ema_alpha: float = 0.3
 
     pretrain_capacity: int = 500000

@@ -14,6 +14,7 @@ def run_pretraining(
     if len(replay.pretrain_buf) < config.pretrain_batch_size:
         return
 
+    eval_interval = max(1, config.pretrain_steps // config.elo_eval_count)
     pbar = tqdm(range(config.pretrain_steps), desc="Pretraining Optimization")
     for step in pbar:
         loss, p_loss, v_loss = train_batch(
@@ -25,7 +26,7 @@ def run_pretraining(
         )
         scheduler.step()
 
-        if (step + 1) % config.elo_eval_interval == 0:
+        if (step + 1) % eval_interval == 0:
             estimate_elo(model, device, config, elo_state)
         elo_postfix = (
             {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
