@@ -22,9 +22,9 @@ class Config:
     pretrain_games: int = 15000
     pretrain_games_per_task: int = 50
     pretrain_max_moves: int = 60
-    pretrain_sample_moves: int = 8
+    pretrain_sample_moves: int = 40
     pretrain_traj_depth: int = 2
-    pretrain_depth: int = 8
+    pretrain_depth: int = 12
     pretrain_samples_target: int = 1536000
     pretrain_batch_size: int = 512
 

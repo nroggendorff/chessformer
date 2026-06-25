@@ -93,13 +93,14 @@ def worker_generate_games(
     engine_path, num_games, max_moves=60, depth_range=(2, 8), sample_moves=None
 ):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
-    samples = [
-        sample
-        for _ in range(num_games)
-        for sample in generate_game(engine, max_moves, depth_range, sample_moves)
-    ]
-    engine.quit()
-    return samples
+    try:
+        return [
+            sample
+            for _ in range(num_games)
+            for sample in generate_game(engine, max_moves, depth_range, sample_moves)
+        ]
+    finally:
+        engine.quit()
 
 
 def generate_pretrain_data(config, replay):
@@ -115,23 +116,27 @@ def generate_pretrain_data(config, replay):
     print(f"Generating {total_games} games using {max_workers} CPU cores...")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for i in tqdm(
-            range(0, len(task_game_counts), max_workers), desc="Parallel Gen"
+        futures = [
+            executor.submit(
+                worker_generate_games,
+                config.stockfish_path,
+                count,
+                config.pretrain_max_moves,
+                (config.pretrain_traj_depth, config.pretrain_depth),
+                config.pretrain_sample_moves,
+            )
+            for count in task_game_counts
+        ]
+        for i, f in enumerate(
+            tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="Parallel Gen",
+            )
         ):
-            futures = [
-                executor.submit(
-                    worker_generate_games,
-                    config.stockfish_path,
-                    count,
-                    config.pretrain_max_moves,
-                    (config.pretrain_traj_depth, config.pretrain_depth),
-                    config.pretrain_sample_moves,
-                )
-                for count in task_game_counts[i : i + max_workers]
-            ]
-            for f in concurrent.futures.as_completed(futures):
-                try:
-                    replay.extend_pretrain(f.result())
-                except Exception:
-                    pass
-            gc.collect()
+            try:
+                replay.extend_pretrain(f.result())
+            except Exception:
+                pass
+            if i % max_workers == 0:
+                gc.collect()

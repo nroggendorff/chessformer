@@ -19,10 +19,15 @@ from training import train_batch
 _GLOBAL_MODEL = None
 
 
-def worker_init(device_type):
+def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
     global _GLOBAL_MODEL
     torch.set_num_threads(1)
-    _GLOBAL_MODEL = ChessNet().to(torch.device(device_type))
+    _GLOBAL_MODEL = ChessNet(
+        d_model=d_model,
+        nhead=nhead,
+        enc_layers=enc_layers,
+        heatmap_hidden=heatmap_hidden,
+    ).to(torch.device(device_type))
 
 
 def play_games_batched(
@@ -125,6 +130,7 @@ def generate_self_play_data(
     sample_moves,
     temperature,
     device,
+    config,
     max_workers=None,
     executor=None,
 ):
@@ -169,7 +175,13 @@ def generate_self_play_data(
         max_workers=max_workers,
         mp_context=mp.get_context("spawn"),
         initializer=worker_init,
-        initargs=(device.type,),
+        initargs=(
+            device.type,
+            config.d_model,
+            config.nhead,
+            config.enc_layers,
+            config.heatmap_hidden,
+        ),
     ) as fresh_executor:
         futures = submit(fresh_executor)
         return [s for f in concurrent.futures.as_completed(futures) for s in f.result()]
@@ -199,7 +211,13 @@ def run_self_play(
             max_workers=max_workers,
             mp_context=mp.get_context("spawn"),
             initializer=worker_init,
-            initargs=(device.type,),
+            initargs=(
+                device.type,
+                config.d_model,
+                config.nhead,
+                config.enc_layers,
+                config.heatmap_hidden,
+            ),
         )
         if use_multiprocessing
         else contextlib.nullcontext()
@@ -219,6 +237,7 @@ def run_self_play(
                     config.self_play_sample_moves,
                     config.self_play_temperature,
                     device,
+                    config,
                     max_workers=max_workers,
                     executor=executor,
                 )
