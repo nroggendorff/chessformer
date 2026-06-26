@@ -11,12 +11,14 @@ from tqdm import tqdm
 from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pair
 
 
-def analyse_multipv(engine, board, depth):
+def analyse_multipv(engine, board, depth, multipv_cap=10):
     legal_moves = list(board.legal_moves)
     if not legal_moves:
         return None
     infos = engine.analyse(
-        board, chess.engine.Limit(depth=depth), multipv=len(legal_moves)
+        board,
+        chess.engine.Limit(depth=depth),
+        multipv=min(len(legal_moves), multipv_cap),
     )
     if not isinstance(infos, list):
         infos = [infos]
@@ -69,13 +71,15 @@ def position_label(infos, board, scores, weight=1.0):
     )
 
 
-def generate_game(engine, max_moves=60, depth_range=(2, 8), sample_moves=None):
+def generate_game(
+    engine, max_moves=60, depth_range=(2, 8), sample_moves=None, multipv_cap=10
+):
     board, samples = chess.Board(), []
     for _ in range(max_moves):
         if board.is_game_over():
             break
         depth = round(random.triangular(*depth_range, depth_range[0]))
-        infos = analyse_multipv(engine, board, depth)
+        infos = analyse_multipv(engine, board, depth, multipv_cap)
         if not infos:
             break
 
@@ -99,6 +103,7 @@ def worker_generate_games(
     depth_range=(2, 8),
     sample_moves=None,
     hash_mb=128,
+    multipv_cap=10,
 ):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
     engine.configure({"Hash": hash_mb})
@@ -106,7 +111,9 @@ def worker_generate_games(
         return [
             sample
             for _ in range(num_games)
-            for sample in generate_game(engine, max_moves, depth_range, sample_moves)
+            for sample in generate_game(
+                engine, max_moves, depth_range, sample_moves, multipv_cap
+            )
         ]
     finally:
         engine.quit()
@@ -134,6 +141,7 @@ def generate_pretrain_data(config, replay):
                 (config.pretrain_traj_depth, config.pretrain_depth),
                 config.pretrain_sample_moves,
                 config.pretrain_hash_mb,
+                config.pretrain_multipv,
             )
             for count in task_game_counts
         ]

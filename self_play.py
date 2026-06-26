@@ -31,7 +31,14 @@ def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
 
 
 def play_games_batched(
-    model, device, num_games=128, max_moves=120, sample_moves=15, temperature=1.0
+    model,
+    device,
+    num_games=128,
+    max_moves=120,
+    sample_moves=15,
+    temperature=1.0,
+    td_lambda=0.8,
+    adv_clip=3.0,
 ):
     model.eval()
     boards = [chess.Board() for _ in range(num_games)]
@@ -75,33 +82,61 @@ def play_games_batched(
             if board.is_game_over(claim_draw=True):
                 finished[original_i] = True
 
-    samples = []
+    raw = []
     for board, trajectory in zip(boards, trajectories):
+        if not trajectory:
+            continue
         out = board.outcome(claim_draw=True)
         outcome_white = (
             1.0
             if out and out.winner == chess.WHITE
             else -1.0 if out and out.winner == chess.BLACK else 0.0
         )
-        for step in trajectory:
-            value_target = (
-                outcome_white if step["turn"] == chess.WHITE else -outcome_white
-            )
-            samples.append(
-                (
-                    np.array(step["board_tokens"], dtype=np.uint8),
-                    step["legal_pairs"],
-                    step["policy_pair"],
-                    np.array([1.0], dtype=np.float32),
-                    value_target,
-                    value_target - step["value_pred"],
-                )
-            )
-    return samples
+        returns = [0.0] * len(trajectory)
+        returns[-1] = (
+            outcome_white if trajectory[-1]["turn"] == chess.WHITE else -outcome_white
+        )
+        for t in range(len(trajectory) - 2, -1, -1):
+            bootstrap = -trajectory[t + 1]["value_pred"]
+            next_return = -returns[t + 1]
+            returns[t] = (1 - td_lambda) * bootstrap + td_lambda * next_return
+        raw.extend(
+            (step, g, g - step["value_pred"]) for step, g in zip(trajectory, returns)
+        )
+
+    if not raw:
+        return []
+
+    advantages = np.array([a for _, _, a in raw], dtype=np.float32)
+    normalized = np.clip(
+        (advantages - advantages.mean()) / (advantages.std() + 1e-6),
+        -adv_clip,
+        adv_clip,
+    )
+
+    return [
+        (
+            np.array(step["board_tokens"], dtype=np.uint8),
+            step["legal_pairs"],
+            step["policy_pair"],
+            np.array([1.0], dtype=np.float32),
+            g,
+            float(w),
+        )
+        for (step, g, _), w in zip(raw, normalized)
+    ]
 
 
 def worker_play_games(
-    state_dict, seed, num_games, max_moves, sample_moves, temperature, device_type
+    state_dict,
+    seed,
+    num_games,
+    max_moves,
+    sample_moves,
+    temperature,
+    td_lambda,
+    adv_clip,
+    device_type,
 ):
     global _GLOBAL_MODEL
     assert _GLOBAL_MODEL
@@ -120,6 +155,8 @@ def worker_play_games(
         max_moves=max_moves,
         sample_moves=sample_moves,
         temperature=temperature,
+        td_lambda=td_lambda,
+        adv_clip=adv_clip,
     )
 
 
@@ -143,6 +180,8 @@ def generate_self_play_data(
                 max_moves=max_moves,
                 sample_moves=sample_moves,
                 temperature=temperature,
+                td_lambda=config.self_play_td_lambda,
+                adv_clip=config.self_play_adv_clip,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -162,6 +201,8 @@ def generate_self_play_data(
                 max_moves,
                 sample_moves,
                 temperature,
+                config.self_play_td_lambda,
+                config.self_play_adv_clip,
                 device.type,
             )
             for i, count in enumerate(counts)
