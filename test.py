@@ -306,12 +306,7 @@ def main():
 
     print_report(report)
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    output_path = os.path.join(
-        OUTPUT_DIR, f"eval_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
-    )
-    open(output_path, "w").write(json.dumps(report, indent=2))
-    print(f"\nSaved full report to {output_path}")
+    print(json.dumps(report, indent=2))
 
 
 if __name__ == "__main__":
