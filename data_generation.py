@@ -34,25 +34,23 @@ def move_scores(infos, board):
     }
 
 
-def position_label(infos, board, weight=1.0):
-    scores = move_scores(infos, board)
+def position_label(infos, board, scores, weight=1.0):
     legal_pairs = np.array(
         list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
     )
     if scores:
-        total = sum(scores.values())
-        policy_pairs = np.array(
-            [
-                (
-                    canonical_square(move.from_square, board),
-                    canonical_square(move.to_square, board),
-                )
-                for move in scores
-            ],
-            dtype=np.uint8,
-        )
+        pair_scores = {}
+        for move, score in scores.items():
+            key = (
+                canonical_square(move.from_square, board),
+                canonical_square(move.to_square, board),
+            )
+            pair_scores[key] = pair_scores.get(key, 0.0) + score
+
+        total = sum(pair_scores.values())
+        policy_pairs = np.array(list(pair_scores.keys()), dtype=np.uint8)
         policy_probs = np.array(
-            [sc / total for sc in scores.values()], dtype=np.float32
+            [sc / total for sc in pair_scores.values()], dtype=np.float32
         )
     else:
         policy_pairs = legal_pairs
@@ -81,8 +79,10 @@ def generate_game(engine, max_moves=60, depth_range=(2, 8), sample_moves=None):
         if not infos:
             break
 
-        samples.append(position_label(infos, board, weight=depth / depth_range[1]))
         scores = move_scores(infos, board)
+        samples.append(
+            position_label(infos, board, scores, weight=depth / depth_range[1])
+        )
         board.push(
             random.choices(list(scores.keys()), weights=list(scores.values()), k=1)[0]
             if scores
