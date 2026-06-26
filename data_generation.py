@@ -12,9 +12,12 @@ from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pa
 
 
 def analyse_multipv(engine, board, depth):
-    if not list(board.legal_moves):
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
         return None
-    infos = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=4)
+    infos = engine.analyse(
+        board, chess.engine.Limit(depth=depth), multipv=len(legal_moves)
+    )
     if not isinstance(infos, list):
         infos = [infos]
     return infos or None
