@@ -27,6 +27,7 @@ class Config:
     pretrain_depth: int = 12
     pretrain_samples_target: int = 1536000
     pretrain_batch_size: int = 512
+    pretrain_hash_mb: int = 128
 
     self_play_iterations: int = 30
     self_play_games_per_iter: int = 32

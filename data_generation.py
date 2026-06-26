@@ -74,7 +74,7 @@ def generate_game(engine, max_moves=60, depth_range=(2, 8), sample_moves=None):
     for _ in range(max_moves):
         if board.is_game_over():
             break
-        depth = random.randint(*depth_range)
+        depth = round(random.triangular(*depth_range, depth_range[0]))
         infos = analyse_multipv(engine, board, depth)
         if not infos:
             break
@@ -93,9 +93,15 @@ def generate_game(engine, max_moves=60, depth_range=(2, 8), sample_moves=None):
 
 
 def worker_generate_games(
-    engine_path, num_games, max_moves=60, depth_range=(2, 8), sample_moves=None
+    engine_path,
+    num_games,
+    max_moves=60,
+    depth_range=(2, 8),
+    sample_moves=None,
+    hash_mb=128,
 ):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+    engine.configure({"Hash": hash_mb})
     try:
         return [
             sample
@@ -127,6 +133,7 @@ def generate_pretrain_data(config, replay):
                 config.pretrain_max_moves,
                 (config.pretrain_traj_depth, config.pretrain_depth),
                 config.pretrain_sample_moves,
+                config.pretrain_hash_mb,
             )
             for count in task_game_counts
         ]
