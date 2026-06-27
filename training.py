@@ -38,7 +38,9 @@ def train_batch(model, opt, scaler, samples, device):
         flat_target = target_policy.view(target_policy.size(0), -1)
         policy_loss = (-(flat_target * flat_log_probs).sum(dim=-1) * weights).mean()
         entropy = -(flat_log_probs.exp() * flat_log_probs).sum(dim=-1).mean()
-        value_loss = F.mse_loss(value_pred, target_values)
+        value_loss = (
+            weights * F.mse_loss(value_pred, target_values, reduction="none")
+        ).mean()
         loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
 
     if not torch.isfinite(loss):

@@ -85,7 +85,7 @@ def generate_game(
 
         scores = move_scores(infos, board)
         samples.append(
-            position_label(infos, board, scores, weight=depth / depth_range[1])
+            position_label(infos, board, scores, weight=(depth / depth_range[1]) ** 2)
         )
         board.push(
             random.choices(list(scores.keys()), weights=list(scores.values()), k=1)[0]
