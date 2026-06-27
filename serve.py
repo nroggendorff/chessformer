@@ -164,6 +164,49 @@ def serialize(board, score):
     }
 
 
+def get_move_log_info(board, move):
+    moving_piece = board.piece_at(move.from_square)
+
+    capture_square = move.to_square
+    if board.is_en_passant(move):
+        capture_square = move.to_square + (-8 if board.turn == chess.WHITE else 8)
+    captured_piece = board.piece_at(capture_square)
+
+    def piece_to_str(p):
+        if not p:
+            return "No"
+        color = "White" if p.color == chess.WHITE else "Black"
+        names = {
+            chess.PAWN: "Pawn",
+            chess.KNIGHT: "Knight",
+            chess.BISHOP: "Bishop",
+            chess.ROOK: "Rook",
+            chess.QUEEN: "Queen",
+            chess.KING: "King",
+        }
+        return f"{color} {names[p.piece_type]}"
+
+    return {
+        "ply": board.ply() + 1,
+        "piece": piece_to_str(moving_piece),
+        "from": chess.square_name(move.from_square),
+        "to": chess.square_name(move.to_square),
+        "capture": piece_to_str(captured_piece),
+    }
+
+
+def print_move_log(log_info, score_after):
+    pov = score_after.pov(chess.WHITE)
+    if pov.is_mate():
+        eval_str = f"Mate in {pov.mate()}"
+    else:
+
+        eval_str = str(round(pov.score(mate_score=10000) / 100.0, 1))
+
+    log_info["eval"] = eval_str
+    print(json.dumps(log_info, indent=4))
+
+
 PIECE_SVGS = {
     symbol: chess.svg.piece(chess.Piece.from_symbol(symbol), size=45)
     for symbol in "PNBRQKpnbrqk"
@@ -236,10 +279,15 @@ def api_move():
     mover = board.turn
     cp_before = score_before.pov(mover).score(mate_score=10000)
 
+    log_info_human = get_move_log_info(board, move)
+
     moves = [describe_move(board, move)]
     board.push(move)
 
     score = analyse(board)
+
+    print_move_log(log_info_human, score)
+
     cp_after = score.pov(mover).score(mate_score=10000)
     quality, cp_loss = classify_move(cp_before, cp_after)
     moves[0]["quality"] = quality
@@ -251,10 +299,16 @@ def api_move():
         cp_before_bot = score.pov(bot_mover).score(mate_score=10000)
 
         reply = bot_move(board, state["model"], state["device"])
+
+        log_info_bot = get_move_log_info(board, reply)
+
         moves.append(describe_move(board, reply))
         board.push(reply)
 
         score = analyse(board)
+
+        print_move_log(log_info_bot, score)
+
         cp_after_bot = score.pov(bot_mover).score(mate_score=10000)
         bot_quality, bot_cp_loss = classify_move(cp_before_bot, cp_after_bot)
         moves[1]["quality"] = bot_quality
