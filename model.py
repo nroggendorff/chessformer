@@ -56,9 +56,12 @@ def build_offset_tables():
 
 
 class ChessNet(nn.Module):
-    def __init__(self, d_model=128, nhead=4, enc_layers=2, heatmap_hidden=128):
+    def __init__(
+        self, d_model=128, nhead=4, enc_layers=2, heatmap_hidden=128, move_emb_dim=32
+    ):
         super().__init__()
         self.d_model = d_model
+        self.move_emb_dim = move_emb_dim
         self.token_emb = nn.Embedding(VOCAB_SIZE, d_model)
         self.pos_emb = nn.Embedding(SEQ_LEN, d_model)
         self.encoder = nn.TransformerEncoder(
@@ -77,9 +80,14 @@ class ChessNet(nn.Module):
             nn.Sequential(
                 nn.Linear(d_model, heatmap_hidden),
                 nn.GELU(),
-                nn.Linear(heatmap_hidden, width),
+                nn.Linear(heatmap_hidden, width * move_emb_dim),
             )
             for width in piece_widths
+        )
+        self.move_score_head = nn.Sequential(
+            nn.Linear(move_emb_dim, heatmap_hidden),
+            nn.GELU(),
+            nn.Linear(heatmap_hidden, 1),
         )
         self.value_head = nn.Sequential(
             nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 1), nn.Tanh()
@@ -87,15 +95,16 @@ class ChessNet(nn.Module):
         self.register_buffer("positions", torch.arange(SEQ_LEN), persistent=False)
 
     def _piece_heatmap(self, mlp, table, squares):
-        raw = mlp(squares)
-        idx = table[:, : raw.size(-1)].unsqueeze(0).expand(raw.size(0), -1, -1)
+        move_embs = mlp(squares).view(*squares.shape[:2], -1, self.move_emb_dim)
+        scores = self.move_score_head(move_embs).squeeze(-1)
+        idx = table[:, : scores.size(-1)].unsqueeze(0).expand(scores.size(0), -1, -1)
         scratch = torch.full(
-            (raw.size(0), BOARD_SQUARES, BOARD_SQUARES + 1),
+            (scores.size(0), BOARD_SQUARES, BOARD_SQUARES + 1),
             -1e4,
-            device=raw.device,
-            dtype=raw.dtype,
+            device=scores.device,
+            dtype=scores.dtype,
         )
-        return scratch.scatter_(-1, idx, raw)[..., :BOARD_SQUARES]
+        return scratch.scatter_(-1, idx, scores)[..., :BOARD_SQUARES]
 
     def forward(self, board_tokens):
         B, S = board_tokens.shape
@@ -124,6 +133,7 @@ def load_checkpoint(path, device, config):
         nhead=config.nhead,
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
+        move_emb_dim=config.move_emb_dim,
     ).to(device)
     model.load_state_dict(load_file(path, device="cpu"))
     model.eval()

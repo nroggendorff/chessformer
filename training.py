@@ -25,7 +25,12 @@ def train_batch(model, opt, scaler, samples, device):
     target_values = torch.tensor(
         [s[4] for s in samples], dtype=torch.float32, device=device
     )
-    weights = torch.tensor([s[5] for s in samples], dtype=torch.float32, device=device)
+    policy_weights = torch.tensor(
+        [s[5] for s in samples], dtype=torch.float32, device=device
+    )
+    value_weights = torch.tensor(
+        [s[6] for s in samples], dtype=torch.float32, device=device
+    )
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(
@@ -36,10 +41,12 @@ def train_batch(model, opt, scaler, samples, device):
         log_probs = joint_move_log_probs(heatmaps, legal_mask).clamp(min=-20.0)
         flat_log_probs = log_probs.view(log_probs.size(0), -1)
         flat_target = target_policy.view(target_policy.size(0), -1)
-        policy_loss = (-(flat_target * flat_log_probs).sum(dim=-1) * weights).mean()
+        policy_loss = (
+            -(flat_target * flat_log_probs).sum(dim=-1) * policy_weights
+        ).mean()
         entropy = -(flat_log_probs.exp() * flat_log_probs).sum(dim=-1).mean()
         value_loss = (
-            weights * F.mse_loss(value_pred, target_values, reduction="none")
+            value_weights * F.mse_loss(value_pred, target_values, reduction="none")
         ).mean()
         loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
 

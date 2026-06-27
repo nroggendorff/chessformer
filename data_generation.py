@@ -68,6 +68,7 @@ def position_label(infos, board, scores, weight=1.0):
         policy_probs,
         value,
         weight,
+        weight,
     )
 
 
