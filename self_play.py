@@ -87,15 +87,20 @@ def play_games_batched(
         if not trajectory:
             continue
         out = board.outcome(claim_draw=True)
-        outcome_white = (
-            1.0
-            if out and out.winner == chess.WHITE
-            else -1.0 if out and out.winner == chess.BLACK else 0.0
-        )
         returns = [0.0] * len(trajectory)
-        returns[-1] = (
-            outcome_white if trajectory[-1]["turn"] == chess.WHITE else -outcome_white
-        )
+        if out is None:
+            returns[-1] = trajectory[-1]["value_pred"]
+        else:
+            outcome_white = (
+                1.0
+                if out.winner == chess.WHITE
+                else -1.0 if out.winner == chess.BLACK else 0.0
+            )
+            returns[-1] = (
+                outcome_white
+                if trajectory[-1]["turn"] == chess.WHITE
+                else -outcome_white
+            )
         for t in range(len(trajectory) - 2, -1, -1):
             bootstrap = -trajectory[t + 1]["value_pred"]
             next_return = -returns[t + 1]
