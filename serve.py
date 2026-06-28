@@ -14,6 +14,20 @@ from policy import batched_policy_step
 app = Flask(__name__, template_folder=os.path.dirname(os.path.abspath(__file__)))
 state = {}
 
+PIECE_NAMES = {
+    chess.PAWN: "Pawn",
+    chess.KNIGHT: "Knight",
+    chess.BISHOP: "Bishop",
+    chess.ROOK: "Rook",
+    chess.QUEEN: "Queen",
+    chess.KING: "King",
+}
+
+PIECE_SVGS = {
+    symbol: chess.svg.piece(chess.Piece.from_symbol(symbol), size=45)
+    for symbol in "PNBRQKpnbrqk"
+}
+
 
 def bot_move(board, model, device):
     moves, _, _ = batched_policy_step([board], model, device, temperature=0.0)
@@ -22,7 +36,11 @@ def bot_move(board, model, device):
 
 def analyse(board):
     info = state["engine"].analyse(board, chess.engine.Limit(depth=state["eval_depth"]))
-    return info["score"]
+    if "score" in info:
+        return info["score"]
+    if board.is_checkmate():
+        return chess.engine.PovScore(chess.engine.Mate(-1), board.turn)
+    return chess.engine.PovScore(chess.engine.Cp(0), board.turn)
 
 
 def eval_display(score):
@@ -55,17 +73,26 @@ def game_status(board):
     return ("White" if board.turn == chess.WHITE else "Black") + " to Move"
 
 
+def capture_square(board, move):
+    if board.is_en_passant(move):
+        return move.to_square + (-8 if board.turn == chess.WHITE else 8)
+    return move.to_square
+
+
+def piece_to_str(piece):
+    if not piece:
+        return "No"
+    return f"{'White' if piece.color == chess.WHITE else 'Black'} {PIECE_NAMES[piece.piece_type]}"
+
+
 def describe_move(board, move):
     info = {
         "from": chess.square_name(move.from_square),
         "to": chess.square_name(move.to_square),
     }
 
-    if board.is_en_passant(move):
-        ep_square = move.to_square + (-8 if board.turn == chess.WHITE else 8)
-        info["capture_square"] = chess.square_name(ep_square)
-    elif board.is_capture(move):
-        info["capture_square"] = info["to"]
+    if board.is_capture(move):
+        info["capture_square"] = chess.square_name(capture_square(board, move))
 
     if board.is_castling(move):
         rank = chess.square_rank(move.from_square)
@@ -90,17 +117,18 @@ def captured_pieces(board):
         chess.ROOK: 2,
         chess.QUEEN: 1,
     }
-    result = {"white": [], "black": []}
-    for color, key in ((chess.WHITE, "white"), (chess.BLACK, "black")):
-        for piece_type, count in starting_counts.items():
-            missing = count - len(board.pieces(piece_type, color))
-            symbol = (
+    return {
+        key: [
+            (
                 chess.piece_symbol(piece_type).upper()
                 if color == chess.WHITE
                 else chess.piece_symbol(piece_type)
             )
-            result[key].extend([symbol] * missing)
-    return result
+            for piece_type, count in starting_counts.items()
+            for _ in range(count - len(board.pieces(piece_type, color)))
+        ]
+        for color, key in ((chess.WHITE, "white"), (chess.BLACK, "black"))
+    }
 
 
 def move_history(board, qualities):
@@ -147,10 +175,7 @@ def serialize(board, score):
             lastmove=board.peek() if board.move_stack else None,
             size=480,
             coordinates=False,
-            colors={
-                "square light": "#f0d9b5",
-                "square dark": "#b58863",
-            },
+            colors={"square light": "#f0d9b5", "square dark": "#b58863"},
         ),
         "pieces": pieces,
         "fen": board.fen(),
@@ -165,52 +190,41 @@ def serialize(board, score):
 
 
 def get_move_log_info(board, move):
-    moving_piece = board.piece_at(move.from_square)
-
-    capture_square = move.to_square
-    if board.is_en_passant(move):
-        capture_square = move.to_square + (-8 if board.turn == chess.WHITE else 8)
-    captured_piece = board.piece_at(capture_square)
-
-    def piece_to_str(p):
-        if not p:
-            return "No"
-        color = "White" if p.color == chess.WHITE else "Black"
-        names = {
-            chess.PAWN: "Pawn",
-            chess.KNIGHT: "Knight",
-            chess.BISHOP: "Bishop",
-            chess.ROOK: "Rook",
-            chess.QUEEN: "Queen",
-            chess.KING: "King",
-        }
-        return f"{color} {names[p.piece_type]}"
-
     return {
         "ply": board.ply() + 1,
-        "piece": piece_to_str(moving_piece),
+        "piece": piece_to_str(board.piece_at(move.from_square)),
         "from": chess.square_name(move.from_square),
         "to": chess.square_name(move.to_square),
-        "capture": piece_to_str(captured_piece),
+        "capture": piece_to_str(board.piece_at(capture_square(board, move))),
     }
 
 
 def print_move_log(log_info, score_after):
     pov = score_after.pov(chess.WHITE)
-    if pov.is_mate():
-        eval_str = f"Mate in {pov.mate()}"
-    else:
-
-        eval_str = str(round(pov.score(mate_score=10000) / 100.0, 1))
-
-    log_info["eval"] = eval_str
-    print(json.dumps(log_info, indent=4))
+    eval_str = (
+        f"Mate in {pov.mate()}"
+        if pov.is_mate()
+        else str(round(pov.score(mate_score=10000) / 100.0, 1))
+    )
+    print(json.dumps({**log_info, "eval": eval_str}, indent=4))
 
 
-PIECE_SVGS = {
-    symbol: chess.svg.piece(chess.Piece.from_symbol(symbol), size=45)
-    for symbol in "PNBRQKpnbrqk"
-}
+def push_and_log(board, move):
+    mover = board.turn
+    cp_before = state["last_score"].pov(mover).score(mate_score=10000)
+    log_info = get_move_log_info(board, move)
+    move_info = describe_move(board, move)
+
+    board.push(move)
+    score = analyse(board)
+    print_move_log(log_info, score)
+
+    quality, cp_loss = classify_move(
+        cp_before, score.pov(mover).score(mate_score=10000)
+    )
+    state["move_qualities"].append({"quality": quality, "cp_loss": cp_loss})
+    state["last_score"] = score
+    return {**move_info, "quality": quality, "cp_loss": cp_loss}, score
 
 
 @app.route("/")
@@ -220,43 +234,36 @@ def index():
 
 @app.route("/api/state")
 def api_state():
-    board = state["board"]
-    score = analyse(board)
-    state["last_score"] = score
-    return jsonify(serialize(board, score))
+    return jsonify(serialize(state["board"], state["last_score"]))
 
 
 @app.route("/api/new", methods=["POST"])
 def api_new():
     state["board"] = chess.Board()
     state["move_qualities"] = []
-    score = analyse(state["board"])
-    state["last_score"] = score
-    return jsonify(serialize(state["board"], score))
+    state["last_score"] = analyse(state["board"])
+    return jsonify(serialize(state["board"], state["last_score"]))
 
 
 @app.route("/api/undo", methods=["POST"])
 def api_undo():
     board = state["board"]
     popped = 0
-    for _ in range(2):
-        if board.move_stack:
-            board.pop()
-            popped += 1
+    while popped < 2 and board.move_stack:
+        board.pop()
+        popped += 1
     state["move_qualities"] = state["move_qualities"][
         : len(state["move_qualities"]) - popped
     ]
-    score = analyse(board)
-    state["last_score"] = score
-    return jsonify(serialize(board, score))
+    state["last_score"] = analyse(board)
+    return jsonify(serialize(board, state["last_score"]))
 
 
 @app.route("/api/move", methods=["POST"])
 def api_move():
     board = state["board"]
     if board.is_game_over(claim_draw=True):
-        score = state.get("last_score") or analyse(board)
-        return jsonify({**serialize(board, score), "moves": []})
+        return jsonify({**serialize(board, state["last_score"]), "moves": []})
 
     move_text = request.json.get("move", "").strip()
     try:
@@ -267,55 +274,25 @@ def api_move():
         try:
             move = board.parse_san(move_text)
         except ValueError:
-            score = state.get("last_score") or analyse(board)
             return (
                 jsonify(
-                    {"error": "Illegal or unparseable move", **serialize(board, score)}
+                    {
+                        "error": "Illegal or unparseable move",
+                        **serialize(board, state["last_score"]),
+                    }
                 ),
                 400,
             )
 
-    score_before = state.get("last_score") or analyse(board)
-    mover = board.turn
-    cp_before = score_before.pov(mover).score(mate_score=10000)
-
-    log_info_human = get_move_log_info(board, move)
-
-    moves = [describe_move(board, move)]
-    board.push(move)
-
-    score = analyse(board)
-
-    print_move_log(log_info_human, score)
-
-    cp_after = score.pov(mover).score(mate_score=10000)
-    quality, cp_loss = classify_move(cp_before, cp_after)
-    moves[0]["quality"] = quality
-    moves[0]["cp_loss"] = cp_loss
-    state["move_qualities"].append({"quality": quality, "cp_loss": cp_loss})
+    human_move, score = push_and_log(board, move)
+    moves = [human_move]
 
     if not board.is_game_over(claim_draw=True):
-        bot_mover = board.turn
-        cp_before_bot = score.pov(bot_mover).score(mate_score=10000)
+        bot_reply, score = push_and_log(
+            board, bot_move(board, state["model"], state["device"])
+        )
+        moves.append(bot_reply)
 
-        reply = bot_move(board, state["model"], state["device"])
-
-        log_info_bot = get_move_log_info(board, reply)
-
-        moves.append(describe_move(board, reply))
-        board.push(reply)
-
-        score = analyse(board)
-
-        print_move_log(log_info_bot, score)
-
-        cp_after_bot = score.pov(bot_mover).score(mate_score=10000)
-        bot_quality, bot_cp_loss = classify_move(cp_before_bot, cp_after_bot)
-        moves[1]["quality"] = bot_quality
-        moves[1]["cp_loss"] = bot_cp_loss
-        state["move_qualities"].append({"quality": bot_quality, "cp_loss": bot_cp_loss})
-
-    state["last_score"] = score
     return jsonify({**serialize(board, score), "moves": moves})
 
 
@@ -338,7 +315,7 @@ def main():
     state["eval_depth"] = args.eval_depth
     state["engine"] = chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
     state["move_qualities"] = []
-    state["last_score"] = None
+    state["last_score"] = analyse(state["board"])
 
     try:
         app.run(host=args.host, port=args.port, threaded=False)

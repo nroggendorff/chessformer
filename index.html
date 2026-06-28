@@ -351,6 +351,46 @@
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
     }
 
+    #captured-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .captured-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .captured-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      font-weight: 700;
+      width: 68px;
+      flex: none;
+    }
+
+    .captured-icons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px;
+      min-height: 20px;
+    }
+
+    .captured-icons .cap-icon {
+      width: 20px;
+      height: 20px;
+    }
+
+    .captured-icons .cap-icon svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
     #history-panel {
       display: flex;
       flex-direction: column;
@@ -512,6 +552,17 @@
         <div class="panel btn-row">
           <button type="button" id="newgame" class="primary">New Game</button>
           <button type="button" id="undo">Undo Move</button>
+        </div>
+
+        <div class="panel" id="captured-panel">
+          <div class="captured-row">
+            <span class="captured-label">White lost</span>
+            <div class="captured-icons" id="captured-white"></div>
+          </div>
+          <div class="captured-row">
+            <span class="captured-label">Black lost</span>
+            <div class="captured-icons" id="captured-black"></div>
+          </div>
         </div>
 
         <div class="panel" id="history-panel">
@@ -715,19 +766,6 @@
       });
     }
 
-    function reconcileInstant(pieces, checkSquare) {
-      const elems = Array.from(
-        document.querySelectorAll("#board-pieces .piece"),
-      );
-      elems.forEach((e) => (e.style.transition = "none"));
-      reconcile(pieces, checkSquare);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          elems.forEach((e) => (e.style.transition = ""));
-        });
-      });
-    }
-
     function applyMove(move) {
       if (move.capture_square) {
         const captured = pieceAt(move.capture_square);
@@ -831,6 +869,17 @@
       return response.json();
     }
 
+    async function submitMove(piece, startSquare, uci) {
+      moveInFlight = true;
+      try {
+        const data = await sendMove(uci);
+        if (!data.moves || !data.moves.length) setSquare(piece, startSquare);
+        render(data);
+      } finally {
+        moveInFlight = false;
+      }
+    }
+
     async function attemptMove(piece, startSquare, target) {
       clearSelection();
       piece.classList.remove("dragging");
@@ -856,28 +905,14 @@
       }
 
       setSquare(piece, target);
-      moveInFlight = true;
-      try {
-        const data = await sendMove(startSquare + target);
-        if (!data.moves || !data.moves.length) setSquare(piece, startSquare);
-        render(data);
-      } finally {
-        moveInFlight = false;
-      }
+      await submitMove(piece, startSquare, startSquare + target);
     }
 
     async function handlePromotionSelection(pieceChar) {
       if (!pendingPromotion) return;
       const { startSquare, target, piece } = pendingPromotion;
       hidePromotionModal();
-      moveInFlight = true;
-      try {
-        const data = await sendMove(startSquare + target + pieceChar);
-        if (!data.moves || !data.moves.length) setSquare(piece, startSquare);
-        render(data);
-      } finally {
-        moveInFlight = false;
-      }
+      await submitMove(piece, startSquare, startSquare + target + pieceChar);
     }
 
     function makeDraggable(piece) {
@@ -962,6 +997,24 @@
         }
       });
 
+    function renderCaptured(captured) {
+      const order = "QRBNP";
+      ["white", "black"].forEach((color) => {
+        document.getElementById("captured-" + color).innerHTML = [
+          ...(captured[color] || []),
+        ]
+          .sort(
+            (a, b) =>
+              order.indexOf(a.toUpperCase()) - order.indexOf(b.toUpperCase()),
+          )
+          .map(
+            (symbol) =>
+              '<span class="cap-icon">' + PIECE_SVG[symbol] + "</span>",
+          )
+          .join("");
+      });
+    }
+
     function renderHistory(history) {
       const el = document.getElementById("history-scroll");
       el.innerHTML = "";
@@ -1035,6 +1088,7 @@
       }
 
       renderHistory(data.history || []);
+      renderCaptured(data.captured || { white: [], black: [] });
 
       const pct =
         data.eval.mate !== undefined
