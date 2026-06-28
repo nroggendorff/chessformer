@@ -19,7 +19,7 @@ from training import train_batch
 _GLOBAL_MODEL = None
 
 
-def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, move_emb_dim):
+def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
     global _GLOBAL_MODEL
     torch.set_num_threads(1)
     _GLOBAL_MODEL = ChessNet(
@@ -27,7 +27,6 @@ def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, move_em
         nhead=nhead,
         enc_layers=enc_layers,
         heatmap_hidden=heatmap_hidden,
-        move_emb_dim=move_emb_dim,
     ).to(torch.device(device_type))
 
 
@@ -224,7 +223,6 @@ def generate_self_play_data(
             config.nhead,
             config.enc_layers,
             config.heatmap_hidden,
-            config.move_emb_dim,
         ),
     ) as fresh_executor:
         futures = submit(fresh_executor)
@@ -261,7 +259,6 @@ def run_self_play(
                 config.nhead,
                 config.enc_layers,
                 config.heatmap_hidden,
-                config.move_emb_dim,
             ),
         )
         if use_multiprocessing
