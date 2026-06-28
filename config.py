@@ -30,16 +30,16 @@ class Config:
     pretrain_hash_mb: int = 128
     pretrain_multipv: int = 10
 
-    self_play_iterations: int = 2000
+    self_play_iterations: int = 1000
     self_play_games_per_iter: int = 32
     self_play_temperature: float = 1.0
     self_play_max_moves: int = 120
     self_play_sample_moves: int = 15
-    self_play_batch_size: int = 256
-    self_play_gradient_steps: int = 6
+    self_play_batch_size: int = 128
+    self_play_gradient_steps: int = 4
     self_play_mix_ratio: float = 0.5
     self_play_td_lambda: float = 0.8
-    self_play_adv_clip: float = 3.0
+    self_play_adv_clip: float = 1.0
 
     elo_eval_count: int = 8
     elo_eval_games: int = 12
