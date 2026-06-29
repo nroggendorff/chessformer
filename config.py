@@ -33,6 +33,7 @@ class Config:
     self_play_iterations: int = 1000
     self_play_games_per_iter: int = 32
     self_play_temperature: float = 1.0
+    self_play_temperature_floor: float = 0.25
     self_play_max_moves: int = 120
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
@@ -40,6 +41,7 @@ class Config:
     self_play_mix_ratio: float = 0.5
     self_play_td_lambda: float = 0.8
     self_play_adv_clip: float = 1.0
+    self_play_rollback_margin: float = 50.0
 
     elo_eval_count: int = 8
     elo_eval_games: int = 12

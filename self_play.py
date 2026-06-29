@@ -37,6 +37,7 @@ def play_games_batched(
     max_moves=120,
     sample_moves=15,
     temperature=1.0,
+    temperature_floor=0.25,
     td_lambda=0.8,
     adv_clip=3.0,
 ):
@@ -54,7 +55,7 @@ def play_games_batched(
             [boards[i] for i in active_indices],
             model,
             device,
-            temperature=temperature if ply < sample_moves else 0.0,
+            temperature=temperature if ply < sample_moves else temperature_floor,
         )
 
         for idx, original_i in enumerate(active_indices):
@@ -140,6 +141,7 @@ def worker_play_games(
     max_moves,
     sample_moves,
     temperature,
+    temperature_floor,
     td_lambda,
     adv_clip,
     device_type,
@@ -161,6 +163,7 @@ def worker_play_games(
         max_moves=max_moves,
         sample_moves=sample_moves,
         temperature=temperature,
+        temperature_floor=temperature_floor,
         td_lambda=td_lambda,
         adv_clip=adv_clip,
     )
@@ -172,6 +175,7 @@ def generate_self_play_data(
     max_moves,
     sample_moves,
     temperature,
+    temperature_floor,
     device,
     config,
     max_workers=None,
@@ -186,6 +190,7 @@ def generate_self_play_data(
                 max_moves=max_moves,
                 sample_moves=sample_moves,
                 temperature=temperature,
+                temperature_floor=temperature_floor,
                 td_lambda=config.self_play_td_lambda,
                 adv_clip=config.self_play_adv_clip,
             )
@@ -207,6 +212,7 @@ def generate_self_play_data(
                 max_moves,
                 sample_moves,
                 temperature,
+                temperature_floor,
                 config.self_play_td_lambda,
                 config.self_play_adv_clip,
                 device.type,
@@ -271,6 +277,11 @@ def run_self_play(
     )
 
     with executor_cm as executor:
+        elo_state["best_state"] = {
+            k: v.cpu().clone() for k, v in model.state_dict().items()
+        }
+        elo_state["best_elo"] = elo_state.get("elo_ema", float("-inf"))
+
         pbar = tqdm(
             range(config.self_play_iterations), desc="Self-Play RL Optimization"
         )
@@ -283,6 +294,7 @@ def run_self_play(
                     config.self_play_max_moves,
                     config.self_play_sample_moves,
                     config.self_play_temperature,
+                    config.self_play_temperature_floor,
                     device,
                     config,
                     max_workers=max_workers,
@@ -291,7 +303,14 @@ def run_self_play(
             )
 
             if (it + 1) % eval_interval == 0:
-                estimate_elo(model, device, config, elo_state)
+                _, elo_ema = estimate_elo(model, device, config, elo_state)
+                if elo_ema >= elo_state["best_elo"]:
+                    elo_state["best_elo"] = elo_ema
+                    elo_state["best_state"] = {
+                        k: v.cpu().clone() for k, v in model.state_dict().items()
+                    }
+                elif elo_state["best_elo"] - elo_ema > config.self_play_rollback_margin:
+                    model.load_state_dict(elo_state["best_state"])
                 pbar.unpause()
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
