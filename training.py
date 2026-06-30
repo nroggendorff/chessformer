@@ -15,7 +15,7 @@ def _dense_policy_and_mask(samples):
     return target_policy, legal_mask
 
 
-def train_batch(model, opt, scaler, samples, device):
+def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0):
     model.train()
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
@@ -31,6 +31,13 @@ def train_batch(model, opt, scaler, samples, device):
     value_weights = torch.tensor(
         [s[6] for s in samples], dtype=torch.float32, device=device
     )
+
+    if ref_model is not None and kl_coef > 0:
+        with torch.no_grad():
+            ref_heatmaps, _ = ref_model(boards)
+            ref_log_probs = joint_move_log_probs(ref_heatmaps, legal_mask).clamp(
+                min=-20.0
+            )
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(
@@ -49,6 +56,15 @@ def train_batch(model, opt, scaler, samples, device):
             value_weights * F.mse_loss(value_pred, target_values, reduction="none")
         ).mean()
         loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
+
+        if ref_model is not None and kl_coef > 0:
+            kl = (
+                (log_probs.exp() * (log_probs - ref_log_probs))
+                .masked_fill(~legal_mask, 0.0)
+                .sum(dim=(-2, -1))
+                .mean()
+            )
+            loss = loss + kl_coef * kl
 
     if not torch.isfinite(loss):
         opt.zero_grad(set_to_none=True)

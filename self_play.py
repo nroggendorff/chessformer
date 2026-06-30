@@ -282,6 +282,17 @@ def run_self_play(
         }
         elo_state["best_elo"] = elo_state.get("elo_ema", float("-inf"))
 
+        ref_model = ChessNet(
+            d_model=config.d_model,
+            nhead=config.nhead,
+            enc_layers=config.enc_layers,
+            heatmap_hidden=config.heatmap_hidden,
+        ).to(device)
+        ref_model.load_state_dict(model.state_dict())
+        ref_model.eval()
+        for p in ref_model.parameters():
+            p.requires_grad_(False)
+
         pbar = tqdm(
             range(config.self_play_iterations), desc="Self-Play RL Optimization"
         )
@@ -329,6 +340,8 @@ def run_self_play(
                                 mix_ratio=config.self_play_mix_ratio,
                             ),
                             device,
+                            ref_model=ref_model,
+                            kl_coef=config.self_play_kl_coef,
                         )
                     )
                     scheduler.step()

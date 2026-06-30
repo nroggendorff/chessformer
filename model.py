@@ -31,6 +31,8 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, 1),
         )
+        nn.init.zeros_(self.value_mlp[-1].weight)
+        nn.init.zeros_(self.value_mlp[-1].bias)
         self.register_buffer("positions", torch.arange(SEQ_LEN), persistent=False)
 
     def forward(self, board_tokens):

@@ -31,7 +31,7 @@ class Config:
     pretrain_multipv: int = 10
 
     self_play_iterations: int = 1000
-    self_play_games_per_iter: int = 32
+    self_play_games_per_iter: int = 128
     self_play_temperature: float = 1.0
     self_play_temperature_floor: float = 0.25
     self_play_max_moves: int = 120
@@ -42,6 +42,7 @@ class Config:
     self_play_td_lambda: float = 0.8
     self_play_adv_clip: float = 1.0
     self_play_rollback_margin: float = 50.0
+    self_play_kl_coef: float = 0.05
 
     elo_eval_count: int = 8
     elo_eval_games: int = 12
