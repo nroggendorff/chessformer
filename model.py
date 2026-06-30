@@ -26,13 +26,6 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, BOARD_SQUARES),
         )
-        self.value_mlp = nn.Sequential(
-            nn.Linear(d_model, heatmap_hidden),
-            nn.GELU(),
-            nn.Linear(heatmap_hidden, 1),
-        )
-        nn.init.zeros_(self.value_mlp[-1].weight)
-        nn.init.zeros_(self.value_mlp[-1].bias)
         self.register_buffer("positions", torch.arange(SEQ_LEN), persistent=False)
 
     def forward(self, board_tokens):
@@ -40,9 +33,7 @@ class ChessNet(nn.Module):
         board = self.encoder(
             self.token_emb(board_tokens) + self.pos_emb(self.positions[:S].expand(B, S))
         )
-        heatmap = self.heatmap_mlp(board[:, :BOARD_SQUARES])
-        value = self.value_mlp(board.mean(dim=1)).squeeze(-1).tanh()
-        return heatmap, value
+        return self.heatmap_mlp(board[:, :BOARD_SQUARES]).tanh()
 
 
 def load_checkpoint(path, device, config):

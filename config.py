@@ -21,7 +21,7 @@ class Config:
 
     pretrain_games: int = 130000
     pretrain_games_per_task: int = 100
-    pretrain_max_moves: int = 50
+    pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 20
     pretrain_traj_depth: int = 3
     pretrain_depth: int = 8
@@ -40,7 +40,7 @@ class Config:
     self_play_gradient_steps: int = 4
     self_play_mix_ratio: float = 0.5
     self_play_td_lambda: float = 0.8
-    self_play_adv_clip: float = 1.0
+    self_play_adv_clip: float = 2.0
     self_play_rollback_margin: float = 50.0
     self_play_kl_coef: float = 0.05
 
