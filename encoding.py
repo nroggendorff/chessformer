@@ -3,6 +3,7 @@ import chess
 TOKEN_EMPTY = 0
 BOARD_SQUARES = 64
 SEQ_LEN = 68
+INPUT_SIZE = SEQ_LEN + 4 * BOARD_SQUARES
 VOCAB_SIZE = 48
 NUM_PIECE_TOKENS = 13
 
@@ -61,6 +62,23 @@ def board_to_tokens(board):
         ]
     )
     return tokens
+
+
+def board_to_input(board):
+    legal_froms = {canonical_square(m.from_square, board) for m in board.legal_moves}
+    legal_tos = {canonical_square(m.to_square, board) for m in board.legal_moves}
+    last_from, last_to = [0] * BOARD_SQUARES, [0] * BOARD_SQUARES
+    if board.move_stack:
+        mv = board.peek()
+        last_from[canonical_square(mv.from_square, board)] = 1
+        last_to[canonical_square(mv.to_square, board)] = 1
+    return (
+        board_to_tokens(board)
+        + [int(i in legal_froms) for i in range(BOARD_SQUARES)]
+        + [int(i in legal_tos) for i in range(BOARD_SQUARES)]
+        + last_from
+        + last_to
+    )
 
 
 def legal_moves_by_square_pair(board):

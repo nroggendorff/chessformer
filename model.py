@@ -26,14 +26,39 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, BOARD_SQUARES),
         )
+        (
+            self.legal_from_emb,
+            self.legal_to_emb,
+            self.last_from_emb,
+            self.last_to_emb,
+        ) = [nn.Embedding(2, d_model) for _ in range(4)]
         self.register_buffer("positions", torch.arange(SEQ_LEN), persistent=False)
 
-    def forward(self, board_tokens):
-        B, S = board_tokens.shape
-        board = self.encoder(
-            self.token_emb(board_tokens) + self.pos_emb(self.positions[:S].expand(B, S))
+    def forward(self, board_input):
+        B = board_input.size(0)
+        x = self.token_emb(board_input[:, :SEQ_LEN]) + self.pos_emb(
+            self.positions.expand(B, SEQ_LEN)
         )
-        return self.heatmap_mlp(board[:, :BOARD_SQUARES]).tanh()
+        x = torch.cat(
+            [
+                x[:, :BOARD_SQUARES]
+                + self.legal_from_emb(board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES])
+                + self.legal_to_emb(
+                    board_input[
+                        :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
+                    ]
+                )
+                + self.last_from_emb(
+                    board_input[
+                        :, SEQ_LEN + 2 * BOARD_SQUARES : SEQ_LEN + 3 * BOARD_SQUARES
+                    ]
+                )
+                + self.last_to_emb(board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]),
+                x[:, BOARD_SQUARES:],
+            ],
+            dim=1,
+        )
+        return self.heatmap_mlp(self.encoder(x)[:, :BOARD_SQUARES])
 
 
 def load_checkpoint(path, device, config):

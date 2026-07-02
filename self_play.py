@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pair
+from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 from evaluation import estimate_elo
 from model import ChessNet
 from policy import batched_policy_step
@@ -39,7 +39,7 @@ def play_games_batched(
     temperature=1.0,
     temperature_floor=0.25,
     td_lambda=0.8,
-    adv_clip=3.0,
+    adv_clip=2.0,
 ):
     model.eval()
     boards = [chess.Board() for _ in range(num_games)]
@@ -62,7 +62,7 @@ def play_games_batched(
             board, move, value = boards[original_i], moves[idx], values[idx]
             trajectories[original_i].append(
                 {
-                    "board_tokens": board_to_tokens(board),
+                    "board_input": board_to_input(board),
                     "legal_pairs": np.array(
                         list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
                     ),
@@ -122,7 +122,7 @@ def play_games_batched(
 
     return [
         (
-            np.array(step["board_tokens"], dtype=np.uint8),
+            np.array(step["board_input"], dtype=np.uint8),
             step["legal_pairs"],
             step["policy_pair"],
             np.array([1.0], dtype=np.float32),

@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from encoding import board_to_tokens, legal_moves_by_square_pair
+from encoding import board_to_input, legal_moves_by_square_pair
 
 
 def legal_mask_and_move_maps(boards):
@@ -31,13 +31,13 @@ def state_value(heatmaps, legal_mask):
 @torch.inference_mode()
 def batched_policy_step(boards, model, device, temperature=0.0):
     move_maps, legal_mask = legal_mask_and_move_maps(boards)
-    board_tokens = torch.tensor(
-        [board_to_tokens(board) for board in boards], dtype=torch.long, device=device
+    heatmaps = model(
+        torch.tensor(
+            [board_to_input(board) for board in boards], dtype=torch.long, device=device
+        )
     )
-    heatmaps = model(board_tokens)
     legal_mask = legal_mask.to(device)
     flat_log_probs = joint_move_log_probs(heatmaps, legal_mask).view(len(boards), -1)
-    value = state_value(heatmaps, legal_mask)
 
     choices = (
         flat_log_probs.argmax(dim=-1)
@@ -47,5 +47,8 @@ def batched_policy_step(boards, model, device, temperature=0.0):
         ).squeeze(-1)
     )
     from_sq, to_sq = (choices // 64).tolist(), (choices % 64).tolist()
-    moves = [move_maps[i][(f, t)] for i, (f, t) in enumerate(zip(from_sq, to_sq))]
-    return moves, value.cpu().tolist(), legal_mask
+    return (
+        [move_maps[i][(f, t)] for i, (f, t) in enumerate(zip(from_sq, to_sq))],
+        state_value(heatmaps, legal_mask).cpu().tolist(),
+        legal_mask,
+    )

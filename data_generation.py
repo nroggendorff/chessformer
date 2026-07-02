@@ -8,7 +8,7 @@ import chess.engine
 import numpy as np
 from tqdm import tqdm
 
-from encoding import board_to_tokens, canonical_square, legal_moves_by_square_pair
+from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 
 
 def analyse_multipv(engine, board, depth, multipv_cap=10):
@@ -36,38 +36,38 @@ def move_scores(infos, board):
     }
 
 
-def move_q_targets(infos, board):
-    pair_targets = {}
-    for info in infos:
-        if "pv" not in info or not info["pv"]:
-            continue
-        move = info["pv"][0]
-        q = math.tanh(info["score"].pov(board.turn).score(mate_score=10000) / 400.0)
-        key = (
-            canonical_square(move.from_square, board),
-            canonical_square(move.to_square, board),
-        )
-        pair_targets[key] = max(pair_targets.get(key, -1.0), q)
-    return pair_targets
-
-
-def position_label(infos, board, weight=1.0):
+def position_label(infos, board, scores, weight=1.0):
     legal_pairs = np.array(
         list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
     )
-    q_targets = move_q_targets(infos, board)
-    q_pairs = (
-        np.array(list(q_targets.keys()), dtype=np.uint8)
-        if q_targets
-        else np.zeros((0, 2), dtype=np.uint8)
-    )
-    q_values = np.array(list(q_targets.values()), dtype=np.float32)
+    if scores:
+        pair_scores = {}
+        for move, score in scores.items():
+            key = (
+                canonical_square(move.from_square, board),
+                canonical_square(move.to_square, board),
+            )
+            pair_scores[key] = pair_scores.get(key, 0.0) + score
 
+        total = sum(pair_scores.values())
+        policy_pairs = np.array(list(pair_scores.keys()), dtype=np.uint8)
+        policy_probs = np.array(
+            [sc / total for sc in pair_scores.values()], dtype=np.float32
+        )
+    else:
+        policy_pairs = legal_pairs
+        policy_probs = np.full(
+            len(legal_pairs), 1.0 / len(legal_pairs), dtype=np.float32
+        )
+
+    value = math.tanh(infos[0]["score"].pov(board.turn).score(mate_score=10000) / 400.0)
     return (
-        np.array(board_to_tokens(board), dtype=np.uint8),
+        np.array(board_to_input(board), dtype=np.uint8),
         legal_pairs,
-        q_pairs,
-        q_values,
+        policy_pairs,
+        policy_probs,
+        value,
+        weight,
         weight,
     )
 
@@ -86,7 +86,7 @@ def generate_game(
 
         scores = move_scores(infos, board)
         samples.append(
-            position_label(infos, board, weight=(depth / depth_range[1]) ** 2)
+            position_label(infos, board, scores, weight=(depth / depth_range[1]) ** 2)
         )
         board.push(
             random.choices(list(scores.keys()), weights=list(scores.values()), k=1)[0]
