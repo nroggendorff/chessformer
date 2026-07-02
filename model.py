@@ -10,7 +10,9 @@ class ChessNet(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.token_emb = nn.Embedding(VOCAB_SIZE, d_model)
-        self.pos_emb = nn.Embedding(SEQ_LEN, d_model)
+        self.rank_emb, self.file_emb, self.meta_pos_emb = [
+            nn.Embedding(n, d_model) for n in (8, 8, SEQ_LEN - BOARD_SQUARES)
+        ]
         self.encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=d_model,
@@ -32,33 +34,51 @@ class ChessNet(nn.Module):
             self.last_from_emb,
             self.last_to_emb,
         ) = [nn.Embedding(2, d_model) for _ in range(4)]
-        self.register_buffer("positions", torch.arange(SEQ_LEN), persistent=False)
+        self.register_buffer(
+            "ranks", torch.arange(BOARD_SQUARES) // 8, persistent=False
+        )
+        self.register_buffer("files", torch.arange(BOARD_SQUARES) % 8, persistent=False)
+        self.register_buffer(
+            "meta_positions", torch.arange(SEQ_LEN - BOARD_SQUARES), persistent=False
+        )
 
     def forward(self, board_input):
         B = board_input.size(0)
-        x = self.token_emb(board_input[:, :SEQ_LEN]) + self.pos_emb(
-            self.positions.expand(B, SEQ_LEN)
-        )
-        x = torch.cat(
-            [
-                x[:, :BOARD_SQUARES]
-                + self.legal_from_emb(board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES])
-                + self.legal_to_emb(
-                    board_input[
-                        :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
-                    ]
+        return self.heatmap_mlp(
+            self.encoder(
+                torch.cat(
+                    [
+                        self.token_emb(board_input[:, :BOARD_SQUARES])
+                        + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
+                        + self.file_emb(self.files.expand(B, BOARD_SQUARES))
+                        + self.legal_from_emb(
+                            board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES]
+                        )
+                        + self.legal_to_emb(
+                            board_input[
+                                :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
+                            ]
+                        )
+                        + self.last_from_emb(
+                            board_input[
+                                :,
+                                SEQ_LEN
+                                + 2 * BOARD_SQUARES : SEQ_LEN
+                                + 3 * BOARD_SQUARES,
+                            ]
+                        )
+                        + self.last_to_emb(
+                            board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]
+                        ),
+                        self.token_emb(board_input[:, BOARD_SQUARES:SEQ_LEN])
+                        + self.meta_pos_emb(
+                            self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
+                        ),
+                    ],
+                    dim=1,
                 )
-                + self.last_from_emb(
-                    board_input[
-                        :, SEQ_LEN + 2 * BOARD_SQUARES : SEQ_LEN + 3 * BOARD_SQUARES
-                    ]
-                )
-                + self.last_to_emb(board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]),
-                x[:, BOARD_SQUARES:],
-            ],
-            dim=1,
+            )[:, :BOARD_SQUARES]
         )
-        return self.heatmap_mlp(self.encoder(x)[:, :BOARD_SQUARES])
 
 
 def load_checkpoint(path, device, config):
