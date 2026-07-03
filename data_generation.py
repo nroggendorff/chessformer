@@ -79,7 +79,7 @@ def generate_game(
     for _ in range(max_moves):
         if board.is_game_over():
             break
-        depth = round(random.triangular(*depth_range, depth_range[0]))
+        depth = round(random.triangular(*depth_range, depth_range[1]))
         infos = analyse_multipv(engine, board, depth, multipv_cap)
         if not infos:
             break

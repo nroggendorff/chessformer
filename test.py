@@ -226,7 +226,6 @@ def evaluate_move_quality(engine, model, device, positions, depth, multipv=8):
                 engine.analyse(board, chess.engine.Limit(depth=depth))["score"]
                 .pov(not board.turn)
                 .score(mate_score=MATE_SCORE)
-                * -1
             )
             board.pop()
 
