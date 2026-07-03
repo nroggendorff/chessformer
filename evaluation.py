@@ -47,7 +47,7 @@ def estimate_elo(model, device, config, state):
             device,
             i % 2 == 0,
             config.elo_eval_max_moves,
-            chess.engine.Limit(depth=config.elo_eval_depth),
+            chess.engine.Limit(time=config.elo_eval_movetime),
         )["score"]
         for i in range(config.elo_eval_games)
     )

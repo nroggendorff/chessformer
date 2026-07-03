@@ -21,17 +21,10 @@ def joint_move_log_probs(heatmaps, legal_mask):
     return log_p_from[:, :, None] + log_p_to_given_from
 
 
-def state_value(heatmaps, legal_mask):
-    return (
-        joint_move_log_probs(heatmaps, legal_mask).exp()
-        * heatmaps.tanh().masked_fill(~legal_mask, 0.0)
-    ).sum(dim=(-2, -1))
-
-
 @torch.inference_mode()
 def batched_policy_step(boards, model, device, temperature=0.0):
     move_maps, legal_mask = legal_mask_and_move_maps(boards)
-    heatmaps = model(
+    heatmaps, values = model(
         torch.tensor(
             [board_to_input(board) for board in boards], dtype=torch.long, device=device
         )
@@ -49,6 +42,6 @@ def batched_policy_step(boards, model, device, temperature=0.0):
     from_sq, to_sq = (choices // 64).tolist(), (choices % 64).tolist()
     return (
         [move_maps[i][(f, t)] for i, (f, t) in enumerate(zip(from_sq, to_sq))],
-        state_value(heatmaps, legal_mask).cpu().tolist(),
+        values.cpu().tolist(),
         legal_mask,
     )

@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from policy import joint_move_log_probs, state_value
+from policy import joint_move_log_probs
 
 
 def _dense_policy_and_mask(samples):
@@ -34,16 +34,16 @@ def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0
 
     if ref_model is not None and kl_coef > 0:
         with torch.no_grad():
-            ref_log_probs = joint_move_log_probs(ref_model(boards), legal_mask).clamp(
-                min=-20.0
-            )
+            ref_log_probs = joint_move_log_probs(
+                ref_model(boards)[0], legal_mask
+            ).clamp(min=-20.0)
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(
         device_type=device.type,
         dtype=torch.float16 if device.type in ("cuda", "mps") else torch.bfloat16,
     ):
-        heatmaps = model(boards)
+        heatmaps, values = model(boards)
         log_probs = joint_move_log_probs(heatmaps, legal_mask).clamp(min=-20.0)
         flat_log_probs = log_probs.view(log_probs.size(0), -1)
         flat_target = target_policy.view(target_policy.size(0), -1)
@@ -52,10 +52,7 @@ def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0
         ).mean()
         entropy = -(flat_log_probs.exp() * flat_log_probs).sum(dim=-1).mean()
         value_loss = (
-            value_weights
-            * F.mse_loss(
-                state_value(heatmaps, legal_mask), target_values, reduction="none"
-            )
+            value_weights * F.mse_loss(values, target_values, reduction="none")
         ).mean()
         loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
         if ref_model is not None and kl_coef > 0:

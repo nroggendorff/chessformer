@@ -28,6 +28,11 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, BOARD_SQUARES),
         )
+        self.value_mlp = nn.Sequential(
+            nn.Linear(d_model, heatmap_hidden),
+            nn.GELU(),
+            nn.Linear(heatmap_hidden, 1),
+        )
         (
             self.legal_from_emb,
             self.legal_to_emb,
@@ -44,40 +49,38 @@ class ChessNet(nn.Module):
 
     def forward(self, board_input):
         B = board_input.size(0)
-        return self.heatmap_mlp(
-            self.encoder(
-                torch.cat(
-                    [
-                        self.token_emb(board_input[:, :BOARD_SQUARES])
-                        + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
-                        + self.file_emb(self.files.expand(B, BOARD_SQUARES))
-                        + self.legal_from_emb(
-                            board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES]
-                        )
-                        + self.legal_to_emb(
-                            board_input[
-                                :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
-                            ]
-                        )
-                        + self.last_from_emb(
-                            board_input[
-                                :,
-                                SEQ_LEN
-                                + 2 * BOARD_SQUARES : SEQ_LEN
-                                + 3 * BOARD_SQUARES,
-                            ]
-                        )
-                        + self.last_to_emb(
-                            board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]
-                        ),
-                        self.token_emb(board_input[:, BOARD_SQUARES:SEQ_LEN])
-                        + self.meta_pos_emb(
-                            self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
-                        ),
-                    ],
-                    dim=1,
-                )
-            )[:, :BOARD_SQUARES]
+        encoded = self.encoder(
+            torch.cat(
+                [
+                    self.token_emb(board_input[:, :BOARD_SQUARES])
+                    + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
+                    + self.file_emb(self.files.expand(B, BOARD_SQUARES))
+                    + self.legal_from_emb(
+                        board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES]
+                    )
+                    + self.legal_to_emb(
+                        board_input[
+                            :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
+                        ]
+                    )
+                    + self.last_from_emb(
+                        board_input[
+                            :,
+                            SEQ_LEN + 2 * BOARD_SQUARES : SEQ_LEN + 3 * BOARD_SQUARES,
+                        ]
+                    )
+                    + self.last_to_emb(board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]),
+                    self.token_emb(board_input[:, BOARD_SQUARES:SEQ_LEN])
+                    + self.meta_pos_emb(
+                        self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
+                    ),
+                ],
+                dim=1,
+            )
+        )
+        return (
+            self.heatmap_mlp(encoded[:, :BOARD_SQUARES]),
+            self.value_mlp(encoded.mean(dim=1)).squeeze(-1).tanh(),
         )
 
 

@@ -30,10 +30,22 @@ def main():
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
     )
     scaler = torch.amp.GradScaler(device.type) if device.type == "cuda" else None
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    total_steps = (
+        config.pretrain_steps
+        + config.self_play_iterations * config.self_play_gradient_steps
+    )
+    warmup_steps = min(500, total_steps // 20)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
         opt,
-        T_max=config.pretrain_steps
-        + config.self_play_iterations * config.self_play_gradient_steps,
+        schedulers=[
+            torch.optim.lr_scheduler.LinearLR(
+                opt, start_factor=1e-2, total_iters=warmup_steps
+            ),
+            torch.optim.lr_scheduler.CosineAnnealingLR(
+                opt, T_max=total_steps - warmup_steps
+            ),
+        ],
+        milestones=[warmup_steps],
     )
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
