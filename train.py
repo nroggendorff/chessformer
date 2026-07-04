@@ -1,10 +1,23 @@
 import os
 
 import torch
-from safetensors.torch import save_file
 
-from config import Config, get_device
-from model import ChessNet
+from config import (
+    Config,
+    build_model,
+    build_optimizer,
+    build_scaler,
+    build_scheduler,
+    default_checkpoint_path,
+    get_device,
+)
+from dataset import (
+    DEFAULT_PATH,
+    dataset_to_samples,
+    generate_pretrain_dataset,
+    load_pretrain_dataset,
+)
+from model import save_checkpoint
 from pretrain import run_pretraining
 from replay_buffer import DualRingBuffer
 from self_play import run_self_play
@@ -17,35 +30,13 @@ def main():
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    model = ChessNet(
-        d_model=config.d_model,
-        nhead=config.nhead,
-        enc_layers=config.enc_layers,
-        heatmap_hidden=config.heatmap_hidden,
-    ).to(device)
-    train_model = (
-        torch.compile(model, mode="reduce-overhead") if device.type == "cuda" else model
-    )
-    opt = torch.optim.AdamW(
-        model.parameters(), lr=config.lr, weight_decay=config.weight_decay
-    )
-    scaler = torch.amp.GradScaler(device.type) if device.type == "cuda" else None
-    total_steps = (
-        config.pretrain_steps
-        + config.self_play_iterations * config.self_play_gradient_steps
-    )
-    warmup_steps = min(500, total_steps // 20)
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
+    model, train_model = build_model(config, device)
+    opt = build_optimizer(model, config)
+    scaler = build_scaler(device)
+    scheduler = build_scheduler(
         opt,
-        schedulers=[
-            torch.optim.lr_scheduler.LinearLR(
-                opt, start_factor=1e-2, total_iters=warmup_steps
-            ),
-            torch.optim.lr_scheduler.CosineAnnealingLR(
-                opt, T_max=total_steps - warmup_steps
-            ),
-        ],
-        milestones=[warmup_steps],
+        config.pretrain_steps
+        + config.self_play_iterations * config.self_play_gradient_steps,
     )
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
@@ -53,8 +44,15 @@ def main():
 
     print(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    elo_state = {}
+    replay.extend_pretrain(
+        dataset_to_samples(
+            load_pretrain_dataset(DEFAULT_PATH)
+            if os.path.exists(DEFAULT_PATH)
+            else generate_pretrain_dataset(config, DEFAULT_PATH)
+        )
+    )
 
+    elo_state = {}
     run_pretraining(
         model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
     )
@@ -62,9 +60,7 @@ def main():
         model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
     )
 
-    model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
-    os.makedirs(model_dir, exist_ok=True)
-    save_file(model.state_dict(), os.path.join(model_dir, "chessformer.safetensors"))
+    save_checkpoint(model, default_checkpoint_path())
 
 
 if __name__ == "__main__":

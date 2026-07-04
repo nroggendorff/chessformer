@@ -8,12 +8,12 @@ import chess
 import chess.engine
 from tqdm import tqdm
 
-from config import Config, get_device
+from config import Config, default_checkpoint_path, get_device
 from evaluation import clamp_uci_elo, play_eval_game
 from model import load_checkpoint
 from policy import batched_policy_step
 
-CHECKPOINT_PATH = "/opt/ml/model/chessformer.safetensors"
+CHECKPOINT_PATH = default_checkpoint_path()
 
 LADDER = [
     {"skill": 0, "depth": 1},

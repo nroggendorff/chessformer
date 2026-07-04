@@ -2,6 +2,7 @@ import concurrent.futures
 import contextlib
 import gc
 import multiprocessing as mp
+import os
 import random
 import time
 
@@ -364,3 +365,40 @@ def run_self_play(
             elif device.type == "mps":
                 torch.mps.empty_cache()
             gc.collect()
+
+
+if __name__ == "__main__":
+    from config import (
+        Config,
+        build_model,
+        build_optimizer,
+        build_scaler,
+        build_scheduler,
+        default_checkpoint_path,
+        get_device,
+    )
+    from model import save_checkpoint
+    from replay_buffer import DualRingBuffer
+
+    config = Config()
+    device = get_device()
+    checkpoint_path = default_checkpoint_path()
+    print(
+        f"Resuming self-play from {checkpoint_path}"
+        if os.path.exists(checkpoint_path)
+        else "Starting self-play from a randomly initialized model"
+    )
+    model, train_model = build_model(config, device, checkpoint_path)
+    opt = build_optimizer(model, config)
+    scaler = build_scaler(device)
+    scheduler = build_scheduler(
+        opt, config.self_play_iterations * config.self_play_gradient_steps
+    )
+    replay = DualRingBuffer(
+        pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
+    )
+
+    run_self_play(
+        model, train_model, opt, scaler, scheduler, replay, device, config, {}
+    )
+    save_checkpoint(model, checkpoint_path)

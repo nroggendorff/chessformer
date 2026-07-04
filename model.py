@@ -1,8 +1,11 @@
+import os
+
 import torch
 import torch.nn as nn
-from safetensors.torch import load_file
+from safetensors.torch import load_file, save_file
 
-from encoding import BOARD_SQUARES, SEQ_LEN, VOCAB_SIZE
+from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN, VOCAB_SIZE
+from piece_attention import PieceAwareEncoder, kv_color_ids, query_type_ids
 
 
 class ChessNet(nn.Module):
@@ -13,16 +16,7 @@ class ChessNet(nn.Module):
         self.rank_emb, self.file_emb, self.meta_pos_emb = [
             nn.Embedding(n, d_model) for n in (8, 8, SEQ_LEN - BOARD_SQUARES)
         ]
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=4 * d_model,
-                batch_first=True,
-                norm_first=True,
-            ),
-            num_layers=enc_layers,
-        )
+        self.encoder = PieceAwareEncoder(d_model, nhead, 4 * d_model, enc_layers)
         self.heatmap_mlp = nn.Sequential(
             nn.Linear(d_model, heatmap_hidden),
             nn.GELU(),
@@ -49,10 +43,14 @@ class ChessNet(nn.Module):
 
     def forward(self, board_input):
         B = board_input.size(0)
+        board_tokens, meta_tokens = (
+            board_input[:, :BOARD_SQUARES],
+            board_input[:, BOARD_SQUARES:SEQ_LEN],
+        )
         encoded = self.encoder(
             torch.cat(
                 [
-                    self.token_emb(board_input[:, :BOARD_SQUARES])
+                    self.token_emb(board_tokens)
                     + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
                     + self.file_emb(self.files.expand(B, BOARD_SQUARES))
                     + self.legal_from_emb(
@@ -70,13 +68,23 @@ class ChessNet(nn.Module):
                         ]
                     )
                     + self.last_to_emb(board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]),
-                    self.token_emb(board_input[:, BOARD_SQUARES:SEQ_LEN])
+                    self.token_emb(meta_tokens)
                     + self.meta_pos_emb(
                         self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
                     ),
                 ],
                 dim=1,
-            )
+            ),
+            torch.cat(
+                [
+                    query_type_ids(board_tokens),
+                    torch.full_like(meta_tokens, NUM_PIECE_TOKENS),
+                ],
+                dim=1,
+            ),
+            torch.cat(
+                [kv_color_ids(board_tokens), torch.full_like(meta_tokens, 2)], dim=1
+            ),
         )
         return (
             self.heatmap_mlp(encoded[:, :BOARD_SQUARES]),
@@ -94,3 +102,8 @@ def load_checkpoint(path, device, config):
     model.load_state_dict(load_file(path, device="cpu"))
     model.eval()
     return model
+
+
+def save_checkpoint(model, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_file(model.state_dict(), path)

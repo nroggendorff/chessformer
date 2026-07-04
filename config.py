@@ -1,8 +1,12 @@
 import multiprocessing
+import os
 import shutil
 from dataclasses import dataclass, field
 
 import torch
+from safetensors.torch import load_file
+
+from model import ChessNet
 
 
 def get_device():
@@ -10,6 +14,12 @@ def get_device():
         "cuda"
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+
+
+def default_checkpoint_path():
+    return os.path.join(
+        os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "chessformer.safetensors"
     )
 
 
@@ -28,7 +38,8 @@ class Config:
     pretrain_samples_target: int = 20000000
     pretrain_batch_size: int = 1024
     pretrain_hash_mb: int = 128
-    pretrain_multipv: int = 10
+    pretrain_policy_depth: int = 3
+    pretrain_drive_multipv: int = 8
 
     self_play_iterations: int = 1000
     self_play_games_per_iter: int = 128
@@ -37,18 +48,18 @@ class Config:
     self_play_max_moves: int = 120
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
-    self_play_gradient_steps: int = 4
-    self_play_mix_ratio: float = 0.5
+    self_play_gradient_steps: int = 2
+    self_play_mix_ratio: float = 0.25
     self_play_td_lambda: float = 0.8
     self_play_adv_clip: float = 2.0
-    self_play_rollback_margin: float = 50.0
+    self_play_rollback_margin: float = 100.0
     self_play_kl_coef: float = 0.05
 
     elo_eval_count: int = 8
-    elo_eval_games: int = 12
+    elo_eval_games: int = 24
     elo_eval_anchor: int = 1320
     elo_eval_max_moves: int = 60
-    elo_eval_depth: int = 1
+    elo_eval_movetime: float = 0.2
     elo_eval_ema_alpha: float = 0.3
 
     pretrain_capacity: int = 55360000
@@ -57,10 +68,10 @@ class Config:
     lr: float = 3e-4
     weight_decay: float = 1e-2
 
-    d_model: int = 256
+    d_model: int = 384
     nhead: int = 8
-    enc_layers: int = 8
-    heatmap_hidden: int = 256
+    enc_layers: int = 12
+    heatmap_hidden: int = 384
 
     max_workers: int = None
 
@@ -71,3 +82,44 @@ class Config:
     @property
     def pretrain_steps(self):
         return max(1, self.pretrain_samples_target // self.pretrain_batch_size)
+
+
+def build_model(config, device, checkpoint_path=None):
+    model = ChessNet(
+        d_model=config.d_model,
+        nhead=config.nhead,
+        enc_layers=config.enc_layers,
+        heatmap_hidden=config.heatmap_hidden,
+    ).to(device)
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        model.load_state_dict(load_file(checkpoint_path, device="cpu"))
+    train_model = (
+        torch.compile(model, mode="reduce-overhead") if device.type == "cuda" else model
+    )
+    return model, train_model
+
+
+def build_optimizer(model, config):
+    return torch.optim.AdamW(
+        model.parameters(), lr=config.lr, weight_decay=config.weight_decay
+    )
+
+
+def build_scaler(device):
+    return torch.amp.GradScaler(device.type) if device.type == "cuda" else None
+
+
+def build_scheduler(opt, total_steps):
+    warmup_steps = min(500, total_steps // 20)
+    return torch.optim.lr_scheduler.SequentialLR(
+        opt,
+        schedulers=[
+            torch.optim.lr_scheduler.LinearLR(
+                opt, start_factor=1e-2, total_iters=warmup_steps
+            ),
+            torch.optim.lr_scheduler.CosineAnnealingLR(
+                opt, T_max=total_steps - warmup_steps
+            ),
+        ],
+        milestones=[warmup_steps],
+    )

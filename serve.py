@@ -7,7 +7,7 @@ import chess.engine
 import chess.svg
 from flask import Flask, jsonify, render_template, request
 
-from config import Config, get_device
+from config import Config, default_checkpoint_path, get_device
 from model import load_checkpoint
 from policy import batched_policy_step
 
@@ -298,9 +298,7 @@ def api_move():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "checkpoint", nargs="?", default="/opt/ml/model/chessformer.safetensors"
-    )
+    parser.add_argument("checkpoint", nargs="?", default=default_checkpoint_path())
     parser.add_argument("--stockfish-path", default="/usr/games/stockfish")
     parser.add_argument("--eval-depth", type=int, default=14)
     parser.add_argument("--host", default="0.0.0.0")
