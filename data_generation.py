@@ -6,6 +6,7 @@ import random
 import chess
 import chess.engine
 import numpy as np
+from tqdm import tqdm
 
 from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 
@@ -159,7 +160,13 @@ def generate_pretrain_data(config):
             )
             for count in task_game_counts
         ]
-        for i, f in enumerate(concurrent.futures.as_completed(futures)):
+        for i, f in enumerate(
+            tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="Pretrain data generation",
+            )
+        ):
             try:
                 yield from f.result()
             except Exception:

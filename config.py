@@ -17,6 +17,12 @@ def get_device():
     )
 
 
+def amp_dtype(device):
+    if device.type == "cuda":
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return torch.float16 if device.type == "mps" else torch.bfloat16
+
+
 def default_checkpoint_path():
     return os.path.join(
         os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "chessformer.safetensors"
@@ -30,13 +36,13 @@ class Config:
     )
 
     pretrain_games: int = 130000
-    pretrain_games_per_task: int = 100
+    pretrain_games_per_task: int = 10
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 20
     pretrain_traj_depth: int = 3
     pretrain_depth: int = 8
     pretrain_samples_target: int = 20000000
-    pretrain_batch_size: int = 1024
+    pretrain_batch_size: int = 512
     pretrain_hash_mb: int = 128
     pretrain_policy_depth: int = 3
     pretrain_drive_multipv: int = 8
@@ -100,13 +106,25 @@ def build_model(config, device, checkpoint_path=None):
 
 
 def build_optimizer(model, config):
+    decay, no_decay = [], []
+    for param in model.parameters():
+        if param.requires_grad:
+            (no_decay if param.ndim < 2 else decay).append(param)
     return torch.optim.AdamW(
-        model.parameters(), lr=config.lr, weight_decay=config.weight_decay
+        [
+            {"params": decay, "weight_decay": config.weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=config.lr,
     )
 
 
 def build_scaler(device):
-    return torch.amp.GradScaler(device.type) if device.type == "cuda" else None
+    return (
+        torch.amp.GradScaler(device.type)
+        if device.type == "cuda" and amp_dtype(device) == torch.float16
+        else None
+    )
 
 
 def build_scheduler(opt, total_steps):

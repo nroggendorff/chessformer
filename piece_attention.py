@@ -31,14 +31,13 @@ def init_weight_bank(num, d_model):
 
 
 def type_conditioned_linear(x, type_ids, weight):
-    B, N, D = x.shape
-    flat_x, flat_types = x.reshape(-1, D), type_ids.reshape(-1)
-    out = torch.zeros_like(flat_x)
-    for t in range(weight.shape[0]):
-        mask = flat_types == t
-        if mask.any():
-            out[mask] = (flat_x[mask] @ weight[t]).to(out.dtype)
-    return out.view(B, N, D)
+    T, D, _ = weight.shape
+    projected = (x @ weight.permute(1, 0, 2).reshape(D, T * D)).view(
+        *x.shape[:-1], T, D
+    )
+    return torch.gather(
+        projected, -2, type_ids[..., None, None].expand(*type_ids.shape, 1, D)
+    ).squeeze(-2)
 
 
 class PieceAwareAttention(nn.Module):

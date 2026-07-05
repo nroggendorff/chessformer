@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from config import amp_dtype
 from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 from evaluation import estimate_elo
 from model import ChessNet
@@ -183,7 +184,7 @@ def generate_self_play_data(
     executor=None,
 ):
     if device.type in ("cuda", "mps"):
-        with torch.autocast(device_type=device.type, dtype=torch.float16):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
             return play_games_batched(
                 model,
                 device,

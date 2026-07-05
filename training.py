@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from config import amp_dtype
 from policy import joint_move_log_probs
 
 
@@ -39,10 +40,7 @@ def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0
             ).clamp(min=-20.0)
 
     opt.zero_grad(set_to_none=True)
-    with torch.autocast(
-        device_type=device.type,
-        dtype=torch.float16 if device.type in ("cuda", "mps") else torch.bfloat16,
-    ):
+    with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
         heatmaps, values = model(boards)
         log_probs = joint_move_log_probs(heatmaps, legal_mask).clamp(min=-20.0)
         flat_log_probs = log_probs.view(log_probs.size(0), -1)
