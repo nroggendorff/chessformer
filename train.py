@@ -11,12 +11,7 @@ from config import (
     default_checkpoint_path,
     get_device,
 )
-from dataset import (
-    DEFAULT_PATH,
-    dataset_to_samples,
-    generate_pretrain_dataset,
-    load_pretrain_dataset,
-)
+from dataset import DEFAULT_PATH, generate_pretrain_dataset, load_pretrain_dataset
 from model import save_checkpoint
 from pretrain import run_pretraining
 from replay_buffer import DualRingBuffer
@@ -45,11 +40,9 @@ def main():
     print(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     replay.extend_pretrain(
-        dataset_to_samples(
-            load_pretrain_dataset(DEFAULT_PATH)
-            if os.path.exists(DEFAULT_PATH)
-            else generate_pretrain_dataset(config, DEFAULT_PATH)
-        )
+        load_pretrain_dataset(DEFAULT_PATH)
+        if os.path.exists(DEFAULT_PATH)
+        else generate_pretrain_dataset(config, DEFAULT_PATH)
     )
 
     elo_state = {}
