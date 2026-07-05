@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from encoding import NUM_PIECE_TOKENS
 
 NUM_QUERY_TYPES = NUM_PIECE_TOKENS + 1
-NUM_KV_COLORS = 3
+NUM_KV_COLORS = 4
 
 
 def query_type_ids(tokens):
@@ -24,41 +24,56 @@ def kv_color_ids(tokens):
     )
 
 
-def init_weight_bank(num, d_model):
-    weight = torch.empty(num, d_model, d_model)
-    [nn.init.xavier_uniform_(w) for w in weight]
-    return nn.Parameter(weight)
+def init_lowrank_bank(num, d_in, d_out, rank):
+    down = nn.Parameter(torch.empty(num, d_in, rank))
+    [nn.init.kaiming_uniform_(w, a=5**0.5) for w in down]
+    return down, nn.Parameter(torch.zeros(num, rank, d_out))
 
 
 def type_conditioned_linear(x, type_ids, weight):
-    T, D, _ = weight.shape
-    projected = (x @ weight.permute(1, 0, 2).reshape(D, T * D)).view(
-        *x.shape[:-1], T, D
+    T, d_in, d_out = weight.shape
+    projected = (x @ weight.permute(1, 0, 2).reshape(d_in, T * d_out)).view(
+        *x.shape[:-1], T, d_out
     )
     return torch.gather(
-        projected, -2, type_ids[..., None, None].expand(*type_ids.shape, 1, D)
+        projected, -2, type_ids[..., None, None].expand(*type_ids.shape, 1, d_out)
     ).squeeze(-2)
 
 
+def type_conditioned_delta(x, type_ids, down, up):
+    return type_conditioned_linear(
+        type_conditioned_linear(x, type_ids, down), type_ids, up
+    )
+
+
 class PieceAwareAttention(nn.Module):
-    def __init__(self, d_model, nhead):
+    def __init__(self, d_model, nhead, rank=32):
         super().__init__()
         self.nhead, self.head_dim = nhead, d_model // nhead
-        self.q_weight = init_weight_bank(NUM_QUERY_TYPES, d_model)
-        self.k_weight = init_weight_bank(NUM_KV_COLORS, d_model)
-        self.v_weight = init_weight_bank(NUM_KV_COLORS, d_model)
+        self.q_proj, self.k_proj, self.v_proj = (
+            nn.Linear(d_model, d_model) for _ in range(3)
+        )
+        self.q_down, self.q_up = init_lowrank_bank(
+            NUM_QUERY_TYPES, d_model, d_model, rank
+        )
+        self.k_down, self.k_up = init_lowrank_bank(
+            NUM_KV_COLORS, d_model, d_model, rank
+        )
+        self.v_down, self.v_up = init_lowrank_bank(
+            NUM_KV_COLORS, d_model, d_model, rank
+        )
         self.out_proj = nn.Linear(d_model, d_model)
 
     def forward(self, x, query_types, kv_colors):
         B, N, D = x.shape
         q, k, v = (
-            type_conditioned_linear(x, ids, weight)
+            (proj(x) + type_conditioned_delta(x, ids, down, up))
             .view(B, N, self.nhead, self.head_dim)
             .transpose(1, 2)
-            for ids, weight in (
-                (query_types, self.q_weight),
-                (kv_colors, self.k_weight),
-                (kv_colors, self.v_weight),
+            for proj, ids, down, up in (
+                (self.q_proj, query_types, self.q_down, self.q_up),
+                (self.k_proj, kv_colors, self.k_down, self.k_up),
+                (self.v_proj, kv_colors, self.v_down, self.v_up),
             )
         )
         return self.out_proj(
@@ -67,9 +82,9 @@ class PieceAwareAttention(nn.Module):
 
 
 class PieceAwareEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward):
+    def __init__(self, d_model, nhead, dim_feedforward, rank=32):
         super().__init__()
-        self.attn = PieceAwareAttention(d_model, nhead)
+        self.attn = PieceAwareAttention(d_model, nhead, rank)
         self.norm1, self.norm2 = nn.LayerNorm(d_model), nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
             nn.Linear(d_model, dim_feedforward),
@@ -83,11 +98,11 @@ class PieceAwareEncoderLayer(nn.Module):
 
 
 class PieceAwareEncoder(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward, num_layers):
+    def __init__(self, d_model, nhead, dim_feedforward, num_layers, rank=32):
         super().__init__()
         self.layers = nn.ModuleList(
             [
-                PieceAwareEncoderLayer(d_model, nhead, dim_feedforward)
+                PieceAwareEncoderLayer(d_model, nhead, dim_feedforward, rank)
                 for _ in range(num_layers)
             ]
         )

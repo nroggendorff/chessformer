@@ -44,7 +44,7 @@ class Config:
     pretrain_samples_target: int = 20000000
     pretrain_batch_size: int = 512
     pretrain_hash_mb: int = 128
-    pretrain_policy_depth: int = 3
+    pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
 
     self_play_iterations: int = 1000
@@ -54,7 +54,7 @@ class Config:
     self_play_max_moves: int = 120
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
-    self_play_gradient_steps: int = 2
+    self_play_gradient_steps: int = 32
     self_play_mix_ratio: float = 0.25
     self_play_td_lambda: float = 0.8
     self_play_adv_clip: float = 2.0
@@ -78,6 +78,7 @@ class Config:
     nhead: int = 8
     enc_layers: int = 12
     heatmap_hidden: int = 384
+    attn_type_rank: int = 32
 
     max_workers: int = None
 
@@ -96,6 +97,7 @@ def build_model(config, device, checkpoint_path=None):
         nhead=config.nhead,
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
+        attn_rank=config.attn_type_rank,
     ).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(load_file(checkpoint_path, device="cpu"))

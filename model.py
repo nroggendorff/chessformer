@@ -7,16 +7,22 @@ from safetensors.torch import load_file, save_file
 from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN, VOCAB_SIZE
 from piece_attention import PieceAwareEncoder, kv_color_ids, query_type_ids
 
+META_KV_COLOR = 3
+
 
 class ChessNet(nn.Module):
-    def __init__(self, d_model=128, nhead=4, enc_layers=2, heatmap_hidden=128):
+    def __init__(
+        self, d_model=128, nhead=4, enc_layers=2, heatmap_hidden=128, attn_rank=32
+    ):
         super().__init__()
         self.d_model = d_model
         self.token_emb = nn.Embedding(VOCAB_SIZE, d_model)
         self.rank_emb, self.file_emb, self.meta_pos_emb = [
             nn.Embedding(n, d_model) for n in (8, 8, SEQ_LEN - BOARD_SQUARES)
         ]
-        self.encoder = PieceAwareEncoder(d_model, nhead, 4 * d_model, enc_layers)
+        self.encoder = PieceAwareEncoder(
+            d_model, nhead, 4 * d_model, enc_layers, attn_rank
+        )
         self.heatmap_mlp = nn.Sequential(
             nn.Linear(d_model, heatmap_hidden),
             nn.GELU(),
@@ -83,7 +89,11 @@ class ChessNet(nn.Module):
                 dim=1,
             ),
             torch.cat(
-                [kv_color_ids(board_tokens), torch.full_like(meta_tokens, 2)], dim=1
+                [
+                    kv_color_ids(board_tokens),
+                    torch.full_like(meta_tokens, META_KV_COLOR),
+                ],
+                dim=1,
             ),
         )
         return (
@@ -98,6 +108,7 @@ def load_checkpoint(path, device, config):
         nhead=config.nhead,
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
+        attn_rank=config.attn_type_rank,
     ).to(device)
     model.load_state_dict(load_file(path, device="cpu"))
     model.eval()

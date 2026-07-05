@@ -322,6 +322,7 @@ def run_self_play(
                     elo_state["best_state"] = {
                         k: v.cpu().clone() for k, v in model.state_dict().items()
                     }
+                    ref_model.load_state_dict(model.state_dict())
                 elif elo_state["best_elo"] - elo_ema > config.self_play_rollback_margin:
                     model.load_state_dict(elo_state["best_state"])
                     opt.state.clear()

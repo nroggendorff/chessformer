@@ -11,10 +11,6 @@ from tqdm import tqdm
 from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 
 
-def analyse_value(engine, board, depth):
-    return engine.analyse(board, chess.engine.Limit(depth=depth))
-
-
 def analyse_full_policy(engine, board, depth, multipv=None):
     legal_moves = list(board.legal_moves)
     if not legal_moves:
@@ -67,7 +63,7 @@ def generate_game(
     engine,
     max_moves=60,
     depth_range=(2, 8),
-    policy_depth=3,
+    drive_depth=3,
     sample_moves=None,
     drive_multipv=8,
 ):
@@ -80,20 +76,20 @@ def generate_game(
         if board.is_game_over():
             break
         is_sample = ply in sample_plies
-        policy_infos = analyse_full_policy(
-            engine, board, policy_depth, multipv=None if is_sample else drive_multipv
+        depth = (
+            round(random.triangular(*depth_range, depth_range[1]))
+            if is_sample
+            else drive_depth
         )
-        if not policy_infos:
+        infos = analyse_full_policy(
+            engine, board, depth, multipv=None if is_sample else drive_multipv
+        )
+        if not infos:
             break
 
-        scores = move_scores(policy_infos, board)
+        scores = move_scores(infos, board)
         if is_sample:
-            depth = round(random.triangular(*depth_range, depth_range[1]))
-            value_score = (
-                analyse_value(engine, board, depth)["score"]
-                .pov(board.turn)
-                .score(mate_score=10000)
-            )
+            value_score = infos[0]["score"].pov(board.turn).score(mate_score=10000)
             samples.append(
                 position_label(
                     value_score, scores, board, weight=(depth / depth_range[1]) ** 2
@@ -111,7 +107,7 @@ def worker_generate_games(
     num_games,
     max_moves=60,
     depth_range=(2, 8),
-    policy_depth=3,
+    drive_depth=3,
     sample_moves=None,
     hash_mb=128,
     drive_multipv=8,
@@ -126,7 +122,7 @@ def worker_generate_games(
                 engine,
                 max_moves,
                 depth_range,
-                policy_depth,
+                drive_depth,
                 sample_moves,
                 drive_multipv,
             )
@@ -153,7 +149,7 @@ def generate_pretrain_data(config):
                 count,
                 config.pretrain_max_moves,
                 (config.pretrain_traj_depth, config.pretrain_depth),
-                config.pretrain_policy_depth,
+                config.pretrain_drive_depth,
                 config.pretrain_sample_moves,
                 config.pretrain_hash_mb,
                 config.pretrain_drive_multipv,
