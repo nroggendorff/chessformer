@@ -20,43 +20,9 @@ from policy import batched_policy_step
 from training import train_batch
 
 _GLOBAL_MODEL = None
-PIECE_VALUES = {
-    chess.PAWN: 1,
-    chess.KNIGHT: 3,
-    chess.BISHOP: 3,
-    chess.ROOK: 5,
-    chess.QUEEN: 9,
-}
-STARTING_NON_KING_MATERIAL = 78
 
 
-def material_score(board, color):
-    return sum(
-        value
-        * (
-            len(board.pieces(piece_type, color))
-            - len(board.pieces(piece_type, not color))
-        )
-        for piece_type, value in PIECE_VALUES.items()
-    )
-
-
-def endgame_weight(board, scale):
-    return 1 + scale * (
-        1
-        - min(
-            sum(
-                len(board.pieces(piece_type, color)) * value
-                for piece_type, value in PIECE_VALUES.items()
-                for color in chess.COLORS
-            ),
-            STARTING_NON_KING_MATERIAL,
-        )
-        / STARTING_NON_KING_MATERIAL
-    )
-
-
-def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
+def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
     global _GLOBAL_MODEL
     torch.set_num_threads(1)
     _GLOBAL_MODEL = ChessNet(
@@ -64,7 +30,33 @@ def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
         nhead=nhead,
         enc_layers=enc_layers,
         heatmap_hidden=heatmap_hidden,
+        attn_rank=attn_rank,
     ).to(torch.device(device_type))
+
+
+def outcome_targets(
+    outcome,
+    turn,
+    plies,
+    max_moves,
+    draw_value,
+    truncation_value,
+    quick_win_bonus,
+    return_clip,
+):
+    if outcome is None:
+        return truncation_value, truncation_value
+    if outcome.winner is None:
+        return draw_value, draw_value
+    if outcome.winner == turn:
+        return 1.0, float(
+            np.clip(
+                1.0 + quick_win_bonus * max(0.0, (max_moves - plies) / max_moves),
+                -return_clip,
+                return_clip + quick_win_bonus,
+            )
+        )
+    return -1.0, -1.0
 
 
 def play_games_batched(
@@ -75,10 +67,11 @@ def play_games_batched(
     sample_moves=15,
     temperature=1.0,
     temperature_floor=0.25,
-    td_lambda=0.8,
     adv_clip=2.0,
-    material_reward=0.08,
-    endgame_weight_scale=2.0,
+    draw_value=-0.15,
+    truncation_value=-0.35,
+    quick_win_bonus=0.35,
+    decisive_weight=1.5,
     return_clip=1.0,
 ):
     model.eval()
@@ -100,80 +93,46 @@ def play_games_batched(
 
         for idx, original_i in enumerate(active_indices):
             board, move, value = boards[original_i], moves[idx], values[idx]
-            mover = board.turn
-            before = material_score(board, mover)
-            step = {
-                "board_input": board_to_input(board),
-                "legal_pairs": np.array(
-                    list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
-                ),
-                "policy_pair": np.array(
-                    [
-                        (
-                            canonical_square(move.from_square, board),
-                            canonical_square(move.to_square, board),
-                        )
-                    ],
-                    dtype=np.uint8,
-                ),
-                "value_pred": value,
-                "turn": mover,
-                "weight": endgame_weight(board, endgame_weight_scale),
-            }
-            trajectories[original_i].append(step)
-            board.push(move)
-            step["reward"] = material_reward * np.tanh(
-                (material_score(board, mover) - before) / 9.0
+            trajectories[original_i].append(
+                {
+                    "board_input": board_to_input(board),
+                    "legal_pairs": np.array(
+                        list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
+                    ),
+                    "policy_pair": np.array(
+                        [
+                            (
+                                canonical_square(move.from_square, board),
+                                canonical_square(move.to_square, board),
+                            )
+                        ],
+                        dtype=np.uint8,
+                    ),
+                    "value_pred": value,
+                    "turn": board.turn,
+                }
             )
+            board.push(move)
             if board.is_game_over(claim_draw=True):
                 finished[original_i] = True
-
-    unfinished_boards = [
-        board
-        for board, trajectory, is_finished in zip(boards, trajectories, finished)
-        if trajectory and not is_finished
-    ]
-    final_values = iter(
-        batched_policy_step(unfinished_boards, model, device, temperature=0.0)[1]
-        if unfinished_boards
-        else []
-    )
 
     raw = []
     for board, trajectory, is_finished in zip(boards, trajectories, finished):
         if not trajectory:
             continue
         out = board.outcome(claim_draw=True)
-        returns = [0.0] * len(trajectory)
-        if out is None or not is_finished:
-            returns[-1] = trajectory[-1]["reward"] - next(final_values)
-        else:
-            outcome_white = (
-                1.0
-                if out.winner == chess.WHITE
-                else -1.0 if out.winner == chess.BLACK else 0.0
+        for step in trajectory:
+            value_target, policy_target = outcome_targets(
+                out if is_finished else None,
+                step["turn"],
+                len(trajectory),
+                max_moves,
+                draw_value,
+                truncation_value,
+                quick_win_bonus,
+                return_clip,
             )
-            returns[-1] = trajectory[-1]["reward"] + (
-                outcome_white
-                if trajectory[-1]["turn"] == chess.WHITE
-                else -outcome_white
-            )
-        returns[-1] = float(np.clip(returns[-1], -return_clip, return_clip))
-        for t in range(len(trajectory) - 2, -1, -1):
-            bootstrap = -trajectory[t + 1]["value_pred"]
-            next_return = -returns[t + 1]
-            returns[t] = float(
-                np.clip(
-                    trajectory[t]["reward"]
-                    + (1 - td_lambda) * bootstrap
-                    + td_lambda * next_return,
-                    -return_clip,
-                    return_clip,
-                )
-            )
-        raw.extend(
-            (step, g, g - step["value_pred"]) for step, g in zip(trajectory, returns)
-        )
+            raw.append((step, value_target, policy_target - step["value_pred"]))
 
     if not raw:
         return []
@@ -192,8 +151,8 @@ def play_games_batched(
             step["policy_pair"],
             np.array([1.0], dtype=np.float32),
             g,
-            float(w * step["weight"]),
-            step["weight"],
+            float(w),
+            decisive_weight if abs(g) == 1.0 else 1.0,
         )
         for (step, g, _), w in zip(raw, normalized)
     ]
@@ -207,10 +166,11 @@ def worker_play_games(
     sample_moves,
     temperature,
     temperature_floor,
-    td_lambda,
     adv_clip,
-    material_reward,
-    endgame_weight_scale,
+    draw_value,
+    truncation_value,
+    quick_win_bonus,
+    decisive_weight,
     return_clip,
     device_type,
 ):
@@ -232,10 +192,11 @@ def worker_play_games(
         sample_moves=sample_moves,
         temperature=temperature,
         temperature_floor=temperature_floor,
-        td_lambda=td_lambda,
         adv_clip=adv_clip,
-        material_reward=material_reward,
-        endgame_weight_scale=endgame_weight_scale,
+        draw_value=draw_value,
+        truncation_value=truncation_value,
+        quick_win_bonus=quick_win_bonus,
+        decisive_weight=decisive_weight,
         return_clip=return_clip,
     )
 
@@ -262,10 +223,11 @@ def generate_self_play_data(
                 sample_moves=sample_moves,
                 temperature=temperature,
                 temperature_floor=temperature_floor,
-                td_lambda=config.self_play_td_lambda,
                 adv_clip=config.self_play_adv_clip,
-                material_reward=config.self_play_material_reward,
-                endgame_weight_scale=config.self_play_endgame_weight,
+                draw_value=config.self_play_draw_value,
+                truncation_value=config.self_play_truncation_value,
+                quick_win_bonus=config.self_play_quick_win_bonus,
+                decisive_weight=config.self_play_decisive_weight,
                 return_clip=config.self_play_return_clip,
             )
 
@@ -287,10 +249,11 @@ def generate_self_play_data(
                 sample_moves,
                 temperature,
                 temperature_floor,
-                config.self_play_td_lambda,
                 config.self_play_adv_clip,
-                config.self_play_material_reward,
-                config.self_play_endgame_weight,
+                config.self_play_draw_value,
+                config.self_play_truncation_value,
+                config.self_play_quick_win_bonus,
+                config.self_play_decisive_weight,
                 config.self_play_return_clip,
                 device.type,
             )
@@ -311,6 +274,7 @@ def generate_self_play_data(
             config.nhead,
             config.enc_layers,
             config.heatmap_hidden,
+            config.attn_type_rank,
         ),
     ) as fresh_executor:
         futures = submit(fresh_executor)
@@ -347,6 +311,7 @@ def run_self_play(
                 config.nhead,
                 config.enc_layers,
                 config.heatmap_hidden,
+                config.attn_type_rank,
             ),
         )
         if use_multiprocessing
@@ -364,6 +329,7 @@ def run_self_play(
             nhead=config.nhead,
             enc_layers=config.enc_layers,
             heatmap_hidden=config.heatmap_hidden,
+            attn_rank=config.attn_type_rank,
         ).to(device)
         ref_model.load_state_dict(model.state_dict())
         ref_model.eval()

@@ -57,10 +57,11 @@ class Config:
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 32
     self_play_mix_ratio: float = 0.1
-    self_play_td_lambda: float = 0.8
     self_play_adv_clip: float = 2.0
-    self_play_material_reward: float = 0.08
-    self_play_endgame_weight: float = 2.0
+    self_play_draw_value: float = -0.15
+    self_play_truncation_value: float = -0.35
+    self_play_quick_win_bonus: float = 0.35
+    self_play_decisive_weight: float = 1.5
     self_play_return_clip: float = 1.0
     self_play_rollback_margin: float = 100.0
     self_play_kl_coef: float = 0.05
