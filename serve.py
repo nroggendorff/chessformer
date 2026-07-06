@@ -86,7 +86,7 @@ def piece_to_str(piece):
 
 
 def describe_move(board, move):
-    info = {
+    info: dict[str, object] = {
         "from": chess.square_name(move.from_square),
         "to": chess.square_name(move.to_square),
     }
@@ -149,7 +149,7 @@ def move_history(board, qualities):
 
 
 def legal_move_map(board):
-    targets = {}
+    targets: dict[str, list[str]] = {}
     for move in board.legal_moves:
         targets.setdefault(chess.square_name(move.from_square), []).append(
             chess.square_name(move.to_square)

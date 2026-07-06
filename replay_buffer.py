@@ -39,7 +39,7 @@ class DatasetBuffer:
 
 class DualRingBuffer:
     def __init__(self, pretrain_capacity=500000, rl_capacity=100000):
-        self.pretrain_buf = RingBuffer(pretrain_capacity)
+        self.pretrain_buf: RingBuffer | DatasetBuffer = RingBuffer(pretrain_capacity)
         self.rl_buf = RingBuffer(rl_capacity)
 
     def extend_pretrain(self, dataset):

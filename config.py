@@ -46,6 +46,7 @@ class Config:
     pretrain_hash_mb: int = 128
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
+    pretrain_endgame_weight: float = 2.0
 
     self_play_iterations: int = 1000
     self_play_games_per_iter: int = 128
@@ -55,9 +56,12 @@ class Config:
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 32
-    self_play_mix_ratio: float = 0.25
+    self_play_mix_ratio: float = 0.1
     self_play_td_lambda: float = 0.8
     self_play_adv_clip: float = 2.0
+    self_play_material_reward: float = 0.08
+    self_play_endgame_weight: float = 2.0
+    self_play_return_clip: float = 1.0
     self_play_rollback_margin: float = 100.0
     self_play_kl_coef: float = 0.05
 
@@ -80,7 +84,7 @@ class Config:
     heatmap_hidden: int = 384
     attn_type_rank: int = 32
 
-    max_workers: int = None
+    max_workers: int | None = None
 
     def __post_init__(self):
         if self.max_workers is None:

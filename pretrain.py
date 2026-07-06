@@ -32,10 +32,12 @@ def run_pretraining(
         )
 
         pbar.set_postfix(
-            loss=f"{loss:.3f}",
-            q=f"{q_loss:.3f}",
-            ent=f"{entropy:.3f}",
-            **elo_postfix,
+            {
+                "loss": f"{loss:.3f}",
+                "q": f"{q_loss:.3f}",
+                "ent": f"{entropy:.3f}",
+                **elo_postfix,
+            }
         )
 
 

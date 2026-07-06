@@ -5,6 +5,7 @@ import multiprocessing as mp
 import os
 import random
 import time
+from typing import Any
 
 import chess
 import numpy as np
@@ -19,6 +20,40 @@ from policy import batched_policy_step
 from training import train_batch
 
 _GLOBAL_MODEL = None
+PIECE_VALUES = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+}
+STARTING_NON_KING_MATERIAL = 78
+
+
+def material_score(board, color):
+    return sum(
+        value
+        * (
+            len(board.pieces(piece_type, color))
+            - len(board.pieces(piece_type, not color))
+        )
+        for piece_type, value in PIECE_VALUES.items()
+    )
+
+
+def endgame_weight(board, scale):
+    return 1 + scale * (
+        1
+        - min(
+            sum(
+                len(board.pieces(piece_type, color)) * value
+                for piece_type, value in PIECE_VALUES.items()
+                for color in chess.COLORS
+            ),
+            STARTING_NON_KING_MATERIAL,
+        )
+        / STARTING_NON_KING_MATERIAL
+    )
 
 
 def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
@@ -42,10 +77,13 @@ def play_games_batched(
     temperature_floor=0.25,
     td_lambda=0.8,
     adv_clip=2.0,
+    material_reward=0.08,
+    endgame_weight_scale=2.0,
+    return_clip=1.0,
 ):
     model.eval()
     boards = [chess.Board() for _ in range(num_games)]
-    trajectories = [[] for _ in range(num_games)]
+    trajectories: list[list[dict[str, Any]]] = [[] for _ in range(num_games)]
     finished = [False] * num_games
 
     for ply in range(max_moves):
@@ -62,52 +100,77 @@ def play_games_batched(
 
         for idx, original_i in enumerate(active_indices):
             board, move, value = boards[original_i], moves[idx], values[idx]
-            trajectories[original_i].append(
-                {
-                    "board_input": board_to_input(board),
-                    "legal_pairs": np.array(
-                        list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
-                    ),
-                    "policy_pair": np.array(
-                        [
-                            (
-                                canonical_square(move.from_square, board),
-                                canonical_square(move.to_square, board),
-                            )
-                        ],
-                        dtype=np.uint8,
-                    ),
-                    "value_pred": value,
-                    "turn": board.turn,
-                }
-            )
+            mover = board.turn
+            before = material_score(board, mover)
+            step = {
+                "board_input": board_to_input(board),
+                "legal_pairs": np.array(
+                    list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
+                ),
+                "policy_pair": np.array(
+                    [
+                        (
+                            canonical_square(move.from_square, board),
+                            canonical_square(move.to_square, board),
+                        )
+                    ],
+                    dtype=np.uint8,
+                ),
+                "value_pred": value,
+                "turn": mover,
+                "weight": endgame_weight(board, endgame_weight_scale),
+            }
+            trajectories[original_i].append(step)
             board.push(move)
+            step["reward"] = material_reward * np.tanh(
+                (material_score(board, mover) - before) / 9.0
+            )
             if board.is_game_over(claim_draw=True):
                 finished[original_i] = True
 
+    unfinished_boards = [
+        board
+        for board, trajectory, is_finished in zip(boards, trajectories, finished)
+        if trajectory and not is_finished
+    ]
+    final_values = iter(
+        batched_policy_step(unfinished_boards, model, device, temperature=0.0)[1]
+        if unfinished_boards
+        else []
+    )
+
     raw = []
-    for board, trajectory in zip(boards, trajectories):
+    for board, trajectory, is_finished in zip(boards, trajectories, finished):
         if not trajectory:
             continue
         out = board.outcome(claim_draw=True)
         returns = [0.0] * len(trajectory)
-        if out is None:
-            returns[-1] = trajectory[-1]["value_pred"]
+        if out is None or not is_finished:
+            returns[-1] = trajectory[-1]["reward"] - next(final_values)
         else:
             outcome_white = (
                 1.0
                 if out.winner == chess.WHITE
                 else -1.0 if out.winner == chess.BLACK else 0.0
             )
-            returns[-1] = (
+            returns[-1] = trajectory[-1]["reward"] + (
                 outcome_white
                 if trajectory[-1]["turn"] == chess.WHITE
                 else -outcome_white
             )
+        returns[-1] = float(np.clip(returns[-1], -return_clip, return_clip))
         for t in range(len(trajectory) - 2, -1, -1):
             bootstrap = -trajectory[t + 1]["value_pred"]
             next_return = -returns[t + 1]
-            returns[t] = (1 - td_lambda) * bootstrap + td_lambda * next_return
+            returns[t] = float(
+                np.clip(
+                    trajectory[t]["reward"]
+                    + (1 - td_lambda) * bootstrap
+                    + td_lambda * next_return,
+                    -return_clip,
+                    return_clip,
+                )
+            )
         raw.extend(
             (step, g, g - step["value_pred"]) for step, g in zip(trajectory, returns)
         )
@@ -129,8 +192,8 @@ def play_games_batched(
             step["policy_pair"],
             np.array([1.0], dtype=np.float32),
             g,
-            float(w),
-            1.0,
+            float(w * step["weight"]),
+            step["weight"],
         )
         for (step, g, _), w in zip(raw, normalized)
     ]
@@ -146,6 +209,9 @@ def worker_play_games(
     temperature_floor,
     td_lambda,
     adv_clip,
+    material_reward,
+    endgame_weight_scale,
+    return_clip,
     device_type,
 ):
     global _GLOBAL_MODEL
@@ -168,6 +234,9 @@ def worker_play_games(
         temperature_floor=temperature_floor,
         td_lambda=td_lambda,
         adv_clip=adv_clip,
+        material_reward=material_reward,
+        endgame_weight_scale=endgame_weight_scale,
+        return_clip=return_clip,
     )
 
 
@@ -195,6 +264,9 @@ def generate_self_play_data(
                 temperature_floor=temperature_floor,
                 td_lambda=config.self_play_td_lambda,
                 adv_clip=config.self_play_adv_clip,
+                material_reward=config.self_play_material_reward,
+                endgame_weight_scale=config.self_play_endgame_weight,
+                return_clip=config.self_play_return_clip,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -217,6 +289,9 @@ def generate_self_play_data(
                 temperature_floor,
                 config.self_play_td_lambda,
                 config.self_play_adv_clip,
+                config.self_play_material_reward,
+                config.self_play_endgame_weight,
+                config.self_play_return_clip,
                 device.type,
             )
             for i, count in enumerate(counts)
@@ -353,14 +428,16 @@ def run_self_play(
                     sum(x[i] for x in losses) / len(losses) for i in range(3)
                 )
                 pbar.set_postfix(
-                    loss=f"{avg_loss:.3f}",
-                    policy=f"{avg_p:.3f}",
-                    value=f"{avg_v:.3f}",
-                    rl_buf=len(replay.rl_buf),
-                    **elo_postfix,
+                    {
+                        "loss": f"{avg_loss:.3f}",
+                        "policy": f"{avg_p:.3f}",
+                        "value": f"{avg_v:.3f}",
+                        "rl_buf": len(replay.rl_buf),
+                        **elo_postfix,
+                    }
                 )
             else:
-                pbar.set_postfix(rl_buf=len(replay.rl_buf), **elo_postfix)
+                pbar.set_postfix({"rl_buf": len(replay.rl_buf), **elo_postfix})
 
             if device.type == "cuda":
                 torch.cuda.empty_cache()

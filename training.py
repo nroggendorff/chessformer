@@ -33,6 +33,7 @@ def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0
         [s[6] for s in samples], dtype=torch.float32, device=device
     )
 
+    ref_log_probs = None
     if ref_model is not None and kl_coef > 0:
         with torch.no_grad():
             ref_log_probs = joint_move_log_probs(
@@ -54,6 +55,7 @@ def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0
         ).mean()
         loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
         if ref_model is not None and kl_coef > 0:
+            assert ref_log_probs is not None
             loss = (
                 loss
                 + kl_coef

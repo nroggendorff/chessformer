@@ -10,6 +10,15 @@ from tqdm import tqdm
 
 from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 
+PIECE_VALUES = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+}
+STARTING_NON_KING_MATERIAL = 78
+
 
 def analyse_full_policy(engine, board, depth, multipv=None):
     legal_moves = list(board.legal_moves)
@@ -32,6 +41,21 @@ def move_scores(infos, board):
         for info in infos
         if "pv" in info and len(info["pv"]) > 0
     }
+
+
+def endgame_weight(board, scale):
+    return 1 + scale * (
+        1
+        - min(
+            sum(
+                len(board.pieces(piece_type, color)) * value
+                for piece_type, value in PIECE_VALUES.items()
+                for color in chess.COLORS
+            ),
+            STARTING_NON_KING_MATERIAL,
+        )
+        / STARTING_NON_KING_MATERIAL
+    )
 
 
 def position_label(value_score, scores, board, weight=1.0):
@@ -66,6 +90,7 @@ def generate_game(
     drive_depth=3,
     sample_moves=None,
     drive_multipv=8,
+    endgame_weight_scale=2.0,
 ):
     board = chess.Board()
     sample_plies = set(
@@ -77,7 +102,7 @@ def generate_game(
             break
         is_sample = ply in sample_plies
         depth = (
-            round(random.triangular(*depth_range, depth_range[1]))
+            round(random.triangular(depth_range[0], depth_range[1], depth_range[1]))
             if is_sample
             else drive_depth
         )
@@ -92,7 +117,11 @@ def generate_game(
             value_score = infos[0]["score"].pov(board.turn).score(mate_score=10000)
             samples.append(
                 position_label(
-                    value_score, scores, board, weight=(depth / depth_range[1]) ** 2
+                    value_score,
+                    scores,
+                    board,
+                    weight=(depth / depth_range[1]) ** 2
+                    * endgame_weight(board, endgame_weight_scale),
                 )
             )
         board.push(
@@ -111,6 +140,7 @@ def worker_generate_games(
     sample_moves=None,
     hash_mb=128,
     drive_multipv=8,
+    endgame_weight_scale=2.0,
 ):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
     engine.configure({"Hash": hash_mb})
@@ -125,6 +155,7 @@ def worker_generate_games(
                 drive_depth,
                 sample_moves,
                 drive_multipv,
+                endgame_weight_scale,
             )
         ]
     finally:
@@ -153,6 +184,7 @@ def generate_pretrain_data(config):
                 config.pretrain_sample_moves,
                 config.pretrain_hash_mb,
                 config.pretrain_drive_multipv,
+                config.pretrain_endgame_weight,
             )
             for count in task_game_counts
         ]

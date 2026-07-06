@@ -11,6 +11,10 @@ META_KV_COLOR = 3
 
 
 class ChessNet(nn.Module):
+    ranks: torch.Tensor
+    files: torch.Tensor
+    meta_positions: torch.Tensor
+
     def __init__(
         self, d_model=128, nhead=4, enc_layers=2, heatmap_hidden=128, attn_rank=32
     ):
