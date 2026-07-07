@@ -1,6 +1,7 @@
 import concurrent.futures
 import contextlib
 import gc
+import math
 import multiprocessing as mp
 import os
 import random
@@ -13,6 +14,7 @@ import torch
 from tqdm import tqdm
 
 from config import amp_dtype
+from data_generation import PIECE_VALUES
 from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 from evaluation import estimate_elo
 from model import ChessNet
@@ -34,8 +36,20 @@ def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_ra
     ).to(torch.device(device_type))
 
 
+def material_value(board, turn):
+    return math.tanh(
+        sum(
+            len(board.pieces(piece_type, turn)) * value
+            - len(board.pieces(piece_type, not turn)) * value
+            for piece_type, value in PIECE_VALUES.items()
+        )
+        / 10.0
+    )
+
+
 def outcome_targets(
     outcome,
+    board,
     turn,
     plies,
     max_moves,
@@ -45,7 +59,14 @@ def outcome_targets(
     return_clip,
 ):
     if outcome is None:
-        return truncation_value, truncation_value
+        value = float(
+            np.clip(
+                material_value(board, turn) + truncation_value,
+                -return_clip,
+                return_clip,
+            )
+        )
+        return value, value
     if outcome.winner is None:
         return draw_value, draw_value
     if outcome.winner == turn:
@@ -124,6 +145,7 @@ def play_games_batched(
         for step in trajectory:
             value_target, policy_target = outcome_targets(
                 out if is_finished else None,
+                board,
                 step["turn"],
                 len(trajectory),
                 max_moves,

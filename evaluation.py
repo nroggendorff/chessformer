@@ -31,7 +31,7 @@ def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
         if outcome is None or outcome.winner is None
         else float(outcome.winner == mover)
     )
-    return {"score": score, "plies": plies}
+    return {"score": score, "plies": plies, "timed_out": outcome is None}
 
 
 def estimate_elo(model, device, config, state):

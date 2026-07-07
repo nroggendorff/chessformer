@@ -52,7 +52,7 @@ class Config:
     self_play_games_per_iter: int = 128
     self_play_temperature: float = 1.0
     self_play_temperature_floor: float = 0.25
-    self_play_max_moves: int = 120
+    self_play_max_moves: int = 150
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 32
@@ -69,7 +69,7 @@ class Config:
     elo_eval_count: int = 8
     elo_eval_games: int = 24
     elo_eval_anchor: int = 1320
-    elo_eval_max_moves: int = 60
+    elo_eval_max_moves: int = 100
     elo_eval_movetime: float = 0.2
     elo_eval_ema_alpha: float = 0.3
 

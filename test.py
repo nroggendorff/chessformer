@@ -36,7 +36,7 @@ LADDER = [
 START_INDEX = 8
 
 GAMES_PER_LEVEL = 8
-MAX_MOVES = 80
+MAX_MOVES = 120
 MOVETIME = 0.2
 
 MOVE_QUALITY_POSITIONS = 200
@@ -93,6 +93,7 @@ def play_level_games(stockfish_path, model, device, level, num_games):
         "wins": scores.count(1.0),
         "draws": scores.count(0.5),
         "losses": scores.count(0.0),
+        "timeouts": sum(g["timed_out"] for g in games),
         "white_score": sum(g["score"] for g in games[0::2]),
         "black_score": sum(g["score"] for g in games[1::2]),
         "avg_plies": sum(g["plies"] for g in games) / num_games,
@@ -265,7 +266,7 @@ def print_report(report):
             f"  vs {level['label']}: {level['wins']}W {level['draws']}D {level['losses']}L "
             f"({level['score']:.1f}/{level['games']}), "
             f"white {level['white_score']:.1f}, black {level['black_score']:.1f}, "
-            f"avg {level['avg_plies']:.0f} plies"
+            f"avg {level['avg_plies']:.0f} plies, {level['timeouts']} timeouts"
         )
 
     if report["estimated_rating"]:
