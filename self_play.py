@@ -1,7 +1,6 @@
 import concurrent.futures
 import contextlib
 import gc
-import math
 import multiprocessing as mp
 import os
 import random
@@ -14,7 +13,6 @@ import torch
 from tqdm import tqdm
 
 from config import amp_dtype
-from data_generation import PIECE_VALUES
 from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
 from evaluation import estimate_elo
 from model import ChessNet
@@ -36,37 +34,9 @@ def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_ra
     ).to(torch.device(device_type))
 
 
-def material_value(board, turn):
-    return math.tanh(
-        sum(
-            len(board.pieces(piece_type, turn)) * value
-            - len(board.pieces(piece_type, not turn)) * value
-            for piece_type, value in PIECE_VALUES.items()
-        )
-        / 10.0
-    )
-
-
 def outcome_targets(
-    outcome,
-    board,
-    turn,
-    plies,
-    max_moves,
-    draw_value,
-    truncation_value,
-    quick_win_bonus,
-    return_clip,
+    outcome, turn, plies, max_moves, draw_value, quick_win_bonus, return_clip
 ):
-    if outcome is None:
-        value = float(
-            np.clip(
-                material_value(board, turn) + truncation_value,
-                -return_clip,
-                return_clip,
-            )
-        )
-        return value, value
     if outcome.winner is None:
         return draw_value, draw_value
     if outcome.winner == turn:
@@ -90,7 +60,6 @@ def play_games_batched(
     temperature_floor=0.25,
     adv_clip=2.0,
     draw_value=-0.15,
-    truncation_value=-0.35,
     quick_win_bonus=0.35,
     decisive_weight=1.5,
     return_clip=1.0,
@@ -139,18 +108,16 @@ def play_games_batched(
 
     raw = []
     for board, trajectory, is_finished in zip(boards, trajectories, finished):
-        if not trajectory:
+        if not trajectory or not is_finished:
             continue
-        out = board.outcome(claim_draw=True)
+        outcome = board.outcome(claim_draw=True)
         for step in trajectory:
             value_target, policy_target = outcome_targets(
-                out if is_finished else None,
-                board,
+                outcome,
                 step["turn"],
                 len(trajectory),
                 max_moves,
                 draw_value,
-                truncation_value,
                 quick_win_bonus,
                 return_clip,
             )
@@ -190,7 +157,6 @@ def worker_play_games(
     temperature_floor,
     adv_clip,
     draw_value,
-    truncation_value,
     quick_win_bonus,
     decisive_weight,
     return_clip,
@@ -216,7 +182,6 @@ def worker_play_games(
         temperature_floor=temperature_floor,
         adv_clip=adv_clip,
         draw_value=draw_value,
-        truncation_value=truncation_value,
         quick_win_bonus=quick_win_bonus,
         decisive_weight=decisive_weight,
         return_clip=return_clip,
@@ -247,7 +212,6 @@ def generate_self_play_data(
                 temperature_floor=temperature_floor,
                 adv_clip=config.self_play_adv_clip,
                 draw_value=config.self_play_draw_value,
-                truncation_value=config.self_play_truncation_value,
                 quick_win_bonus=config.self_play_quick_win_bonus,
                 decisive_weight=config.self_play_decisive_weight,
                 return_clip=config.self_play_return_clip,
@@ -273,7 +237,6 @@ def generate_self_play_data(
                 temperature_floor,
                 config.self_play_adv_clip,
                 config.self_play_draw_value,
-                config.self_play_truncation_value,
                 config.self_play_quick_win_bonus,
                 config.self_play_decisive_weight,
                 config.self_play_return_clip,
