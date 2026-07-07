@@ -319,10 +319,13 @@ def run_self_play(
     )
 
     with executor_cm as executor:
+        if "elo_ema" not in elo_state:
+            estimate_elo(model, device, config, elo_state)
+
         elo_state["best_state"] = {
             k: v.cpu().clone() for k, v in model.state_dict().items()
         }
-        elo_state["best_elo"] = elo_state.get("elo_ema", float("-inf"))
+        elo_state["best_elo"] = elo_state["elo_ema"]
 
         ref_model = ChessNet(
             d_model=config.d_model,
@@ -367,6 +370,7 @@ def run_self_play(
                 elif elo_state["best_elo"] - elo_ema > config.self_play_rollback_margin:
                     model.load_state_dict(elo_state["best_state"])
                     opt.state.clear()
+                    elo_state["elo_ema"] = elo_state["best_elo"]
                 pbar.unpause()
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
@@ -410,6 +414,8 @@ def run_self_play(
             elif device.type == "mps":
                 torch.mps.empty_cache()
             gc.collect()
+
+        model.load_state_dict(elo_state["best_state"])
 
 
 if __name__ == "__main__":
