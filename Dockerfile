@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y stockfish && rm -rf /var/lib/apt/lists/
 
 WORKDIR /app/
 
-RUN pip install --no-cache-dir python-chess datasets tqdm flask
+RUN pip install --no-cache-dir python-chess datasets tqdm flask berserk
 
 COPY . .
 
