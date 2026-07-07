@@ -111,11 +111,11 @@ def play_games_batched(
         if not trajectory or not is_finished:
             continue
         outcome = board.outcome(claim_draw=True)
-        for step in trajectory:
+        for step_index, step in enumerate(trajectory):
             value_target, policy_target = outcome_targets(
                 outcome,
                 step["turn"],
-                len(trajectory),
+                len(trajectory) - step_index,
                 max_moves,
                 draw_value,
                 quick_win_bonus,
