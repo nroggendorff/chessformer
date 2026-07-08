@@ -2,10 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from encoding import NUM_PIECE_TOKENS
+from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN
 
 NUM_QUERY_TYPES = NUM_PIECE_TOKENS + 1
 NUM_KV_COLORS = 4
+NUM_RELATIONS = 15 * 15 + 1
 
 
 def query_type_ids(tokens):
@@ -22,6 +23,16 @@ def kv_color_ids(tokens):
             torch.full_like(tokens, 2),
         ),
     )
+
+
+def relative_position_ids():
+    ranks, files = torch.arange(BOARD_SQUARES) // 8, torch.arange(BOARD_SQUARES) % 8
+    board_ids = (ranks[:, None] - ranks[None, :] + 7) * 15 + (
+        files[:, None] - files[None, :] + 7
+    )
+    ids = torch.full((SEQ_LEN, SEQ_LEN), NUM_RELATIONS - 1, dtype=torch.long)
+    ids[:BOARD_SQUARES, :BOARD_SQUARES] = board_ids
+    return ids
 
 
 def init_lowrank_bank(num, d_in, d_out, rank):
@@ -62,9 +73,10 @@ class PieceAwareAttention(nn.Module):
         self.v_down, self.v_up = init_lowrank_bank(
             NUM_KV_COLORS, d_model, d_model, rank
         )
+        self.rel_bias = nn.Parameter(torch.zeros(NUM_RELATIONS, nhead))
         self.out_proj = nn.Linear(d_model, d_model)
 
-    def forward(self, x, query_types, kv_colors):
+    def forward(self, x, query_types, kv_colors, rel_ids):
         B, N, D = x.shape
         q, k, v = (
             (proj(x) + type_conditioned_delta(x, ids, down, up))
@@ -76,8 +88,11 @@ class PieceAwareAttention(nn.Module):
                 (self.v_proj, kv_colors, self.v_down, self.v_up),
             )
         )
+        bias = self.rel_bias[rel_ids].permute(2, 0, 1).unsqueeze(0)
         return self.out_proj(
-            F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(B, N, D)
+            F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
+            .transpose(1, 2)
+            .reshape(B, N, D)
         )
 
 
@@ -92,12 +107,14 @@ class PieceAwareEncoderLayer(nn.Module):
             nn.Linear(dim_feedforward, d_model),
         )
 
-    def forward(self, x, query_types, kv_colors):
-        x = x + self.attn(self.norm1(x), query_types, kv_colors)
+    def forward(self, x, query_types, kv_colors, rel_ids):
+        x = x + self.attn(self.norm1(x), query_types, kv_colors, rel_ids)
         return x + self.ff(self.norm2(x))
 
 
 class PieceAwareEncoder(nn.Module):
+    rel_ids: torch.Tensor
+
     def __init__(self, d_model, nhead, dim_feedforward, num_layers, rank=32):
         super().__init__()
         self.layers = nn.ModuleList(
@@ -106,8 +123,9 @@ class PieceAwareEncoder(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self.register_buffer("rel_ids", relative_position_ids(), persistent=False)
 
     def forward(self, x, query_types, kv_colors):
         for layer in self.layers:
-            x = layer(x, query_types, kv_colors)
+            x = layer(x, query_types, kv_colors, self.rel_ids)
         return x

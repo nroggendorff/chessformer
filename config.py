@@ -80,10 +80,10 @@ class Config:
     weight_decay: float = 1e-2
 
     d_model: int = 384
-    nhead: int = 8
+    nhead: int = 6
     enc_layers: int = 12
-    heatmap_hidden: int = 384
-    attn_type_rank: int = 32
+    heatmap_hidden: int = 192
+    attn_type_rank: int = 16
 
     max_workers: int | None = None
 
