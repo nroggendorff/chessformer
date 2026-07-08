@@ -32,15 +32,18 @@ def analyse_full_policy(engine, board, depth, multipv=None):
     return infos if isinstance(infos, list) else [infos]
 
 
-def move_scores(infos, board):
-    return {
-        info["pv"][0]: math.exp(
-            max(min(info["score"].pov(board.turn).score(mate_score=10000), 1000), -1000)
-            / 250.0
-        )
+def win_probability(score, ply):
+    return score.wdl(model="sf", ply=ply).expectation()
+
+
+def move_scores(infos, board, temperature):
+    probs = {
+        info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
         for info in infos
         if "pv" in info and len(info["pv"]) > 0
     }
+    best = max(probs.values(), default=0.0)
+    return {move: math.exp((p - best) / temperature) for move, p in probs.items()}
 
 
 def endgame_weight(board, scale):
@@ -58,7 +61,7 @@ def endgame_weight(board, scale):
     )
 
 
-def position_label(value_score, scores, board, weight=1.0):
+def position_label(win_prob, scores, board, weight=1.0):
     pair_scores = {}
     for move, score in scores.items():
         key = (
@@ -77,7 +80,7 @@ def position_label(value_score, scores, board, weight=1.0):
         "policy_probs": np.array(
             [sc / total for sc in pair_scores.values()], dtype=np.float32
         ),
-        "value": math.tanh(value_score / 400.0),
+        "value": 2 * win_prob - 1,
         "policy_weight": weight,
         "value_weight": weight,
     }
@@ -91,6 +94,7 @@ def generate_game(
     sample_moves=None,
     drive_multipv=8,
     endgame_weight_scale=2.0,
+    policy_temperature=0.1,
 ):
     board = chess.Board()
     sample_plies = set(
@@ -112,12 +116,11 @@ def generate_game(
         if not infos:
             break
 
-        scores = move_scores(infos, board)
+        scores = move_scores(infos, board, policy_temperature)
         if is_sample:
-            value_score = infos[0]["score"].pov(board.turn).score(mate_score=10000)
             samples.append(
                 position_label(
-                    value_score,
+                    win_probability(infos[0]["score"].pov(board.turn), board.ply()),
                     scores,
                     board,
                     weight=(depth / depth_range[1]) ** 2
@@ -141,6 +144,7 @@ def worker_generate_games(
     hash_mb=128,
     drive_multipv=8,
     endgame_weight_scale=2.0,
+    policy_temperature=0.1,
 ):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
     engine.configure({"Hash": hash_mb})
@@ -156,6 +160,7 @@ def worker_generate_games(
                 sample_moves,
                 drive_multipv,
                 endgame_weight_scale,
+                policy_temperature,
             )
         ]
     finally:
@@ -185,6 +190,7 @@ def generate_pretrain_data(config):
                 config.pretrain_hash_mb,
                 config.pretrain_drive_multipv,
                 config.pretrain_endgame_weight,
+                config.pretrain_policy_temperature,
             )
             for count in task_game_counts
         ]

@@ -47,6 +47,7 @@ class Config:
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
     pretrain_endgame_weight: float = 2.0
+    pretrain_policy_temperature: float = 0.1
 
     self_play_iterations: int = 1000
     self_play_games_per_iter: int = 128
