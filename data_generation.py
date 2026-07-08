@@ -94,7 +94,7 @@ def generate_game(
     sample_moves=None,
     drive_multipv=8,
     endgame_weight_scale=2.0,
-    policy_temperature=0.1,
+    policy_temperature=0.5,
 ):
     board = chess.Board()
     sample_plies = set(
@@ -144,7 +144,7 @@ def worker_generate_games(
     hash_mb=128,
     drive_multipv=8,
     endgame_weight_scale=2.0,
-    policy_temperature=0.1,
+    policy_temperature=0.5,
 ):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
     engine.configure({"Hash": hash_mb})
