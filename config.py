@@ -41,13 +41,14 @@ class Config:
     pretrain_sample_moves: int = 20
     pretrain_traj_depth: int = 3
     pretrain_depth: int = 8
+    pretrain_sample_multipv: int = 12
     pretrain_samples_target: int = 20000000
     pretrain_batch_size: int = 512
     pretrain_hash_mb: int = 128
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
     pretrain_endgame_weight: float = 2.0
-    pretrain_policy_temperature: float = 0.5
+    pretrain_policy_temperature: float = 0.25
 
     self_play_iterations: int = 1000
     self_play_games_per_iter: int = 128

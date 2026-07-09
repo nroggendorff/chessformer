@@ -93,6 +93,7 @@ def generate_game(
     drive_depth=3,
     sample_moves=None,
     drive_multipv=8,
+    sample_multipv=12,
     endgame_weight_scale=2.0,
     policy_temperature=0.5,
 ):
@@ -111,7 +112,7 @@ def generate_game(
             else drive_depth
         )
         infos = analyse_full_policy(
-            engine, board, depth, multipv=None if is_sample else drive_multipv
+            engine, board, depth, multipv=sample_multipv if is_sample else drive_multipv
         )
         if not infos:
             break
@@ -143,6 +144,7 @@ def worker_generate_games(
     sample_moves=None,
     hash_mb=128,
     drive_multipv=8,
+    sample_multipv=12,
     endgame_weight_scale=2.0,
     policy_temperature=0.5,
 ):
@@ -159,6 +161,7 @@ def worker_generate_games(
                 drive_depth,
                 sample_moves,
                 drive_multipv,
+                sample_multipv,
                 endgame_weight_scale,
                 policy_temperature,
             )
@@ -189,6 +192,7 @@ def generate_pretrain_data(config):
                 config.pretrain_sample_moves,
                 config.pretrain_hash_mb,
                 config.pretrain_drive_multipv,
+                config.pretrain_sample_multipv,
                 config.pretrain_endgame_weight,
                 config.pretrain_policy_temperature,
             )
