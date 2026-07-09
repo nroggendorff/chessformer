@@ -7,6 +7,7 @@ from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN
 NUM_QUERY_TYPES = NUM_PIECE_TOKENS + 1
 NUM_KV_COLORS = 4
 NUM_RELATIONS = 15 * 15 + 1
+REL_BIAS_SCALE = 4.0
 
 
 def query_type_ids(tokens):
@@ -88,7 +89,11 @@ class PieceAwareAttention(nn.Module):
                 (self.v_proj, kv_colors, self.v_down, self.v_up),
             )
         )
-        bias = self.rel_bias[rel_ids].permute(2, 0, 1).unsqueeze(0)
+        bias = (
+            (REL_BIAS_SCALE * torch.tanh(self.rel_bias[rel_ids]))
+            .permute(2, 0, 1)
+            .unsqueeze(0)
+        )
         return self.out_proj(
             F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
             .transpose(1, 2)
