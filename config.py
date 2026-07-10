@@ -65,7 +65,9 @@ class Config:
     self_play_decisive_weight: float = 1.5
     self_play_return_clip: float = 1.0
     self_play_rollback_margin: float = 100.0
+    self_play_rollback_patience: int = 2
     self_play_kl_coef: float = 0.05
+    self_play_ref_sync_interval: int = 50
 
     elo_eval_count: int = 8
     elo_eval_games: int = 24

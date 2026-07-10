@@ -328,6 +328,7 @@ def run_self_play(
             range(config.self_play_iterations), desc="Self-Play RL Optimization"
         )
         eval_interval = max(1, config.self_play_iterations // config.elo_eval_count)
+        bad_evals = 0
         for it in pbar:
             replay.extend_rl(
                 generate_self_play_data(
@@ -344,6 +345,9 @@ def run_self_play(
                 )
             )
 
+            if (it + 1) % config.self_play_ref_sync_interval == 0:
+                ref_model.load_state_dict(model.state_dict())
+
             if (it + 1) % eval_interval == 0:
                 _, elo_ema = estimate_elo(model, device, config, elo_state)
                 if elo_ema >= elo_state["best_elo"]:
@@ -352,10 +356,16 @@ def run_self_play(
                         k: v.cpu().clone() for k, v in model.state_dict().items()
                     }
                     ref_model.load_state_dict(model.state_dict())
+                    bad_evals = 0
                 elif elo_state["best_elo"] - elo_ema > config.self_play_rollback_margin:
-                    model.load_state_dict(elo_state["best_state"])
-                    opt.state.clear()
-                    elo_state["elo_ema"] = elo_state["best_elo"]
+                    bad_evals += 1
+                    if bad_evals >= config.self_play_rollback_patience:
+                        model.load_state_dict(elo_state["best_state"])
+                        opt.state.clear()
+                        elo_state["elo_ema"] = elo_state["best_elo"]
+                        bad_evals = 0
+                else:
+                    bad_evals = 0
                 pbar.unpause()
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
@@ -400,7 +410,9 @@ def run_self_play(
                 torch.mps.empty_cache()
             gc.collect()
 
-        model.load_state_dict(elo_state["best_state"])
+        final_elo, _ = estimate_elo(model, device, config, elo_state)
+        if final_elo < elo_state["best_elo"] - config.self_play_rollback_margin:
+            model.load_state_dict(elo_state["best_state"])
 
 
 if __name__ == "__main__":
