@@ -36,7 +36,7 @@ class Config:
     )
 
     pretrain_games: int = 130000
-    pretrain_games_per_task: int = 10
+    pretrain_games_per_task: int = 2
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 20
     pretrain_traj_depth: int = 3

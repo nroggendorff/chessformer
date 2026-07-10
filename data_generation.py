@@ -1,3 +1,4 @@
+import atexit
 import concurrent.futures
 import gc
 import math
@@ -18,6 +19,15 @@ PIECE_VALUES = {
     chess.QUEEN: 9,
 }
 STARTING_NON_KING_MATERIAL = 78
+
+_ENGINE = None
+
+
+def worker_init(engine_path, hash_mb):
+    global _ENGINE
+    _ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
+    _ENGINE.configure({"Hash": hash_mb})
+    atexit.register(_ENGINE.quit)
 
 
 def analyse_full_policy(engine, board, depth, multipv=None):
@@ -136,38 +146,31 @@ def generate_game(
 
 
 def worker_generate_games(
-    engine_path,
     num_games,
     max_moves=60,
     depth_range=(2, 8),
     drive_depth=3,
     sample_moves=None,
-    hash_mb=128,
     drive_multipv=8,
     sample_multipv=12,
     endgame_weight_scale=2.0,
     policy_temperature=0.5,
 ):
-    engine = chess.engine.SimpleEngine.popen_uci(engine_path)
-    engine.configure({"Hash": hash_mb})
-    try:
-        return [
-            sample
-            for _ in range(num_games)
-            for sample in generate_game(
-                engine,
-                max_moves,
-                depth_range,
-                drive_depth,
-                sample_moves,
-                drive_multipv,
-                sample_multipv,
-                endgame_weight_scale,
-                policy_temperature,
-            )
-        ]
-    finally:
-        engine.quit()
+    return [
+        sample
+        for _ in range(num_games)
+        for sample in generate_game(
+            _ENGINE,
+            max_moves,
+            depth_range,
+            drive_depth,
+            sample_moves,
+            drive_multipv,
+            sample_multipv,
+            endgame_weight_scale,
+            policy_temperature,
+        )
+    ]
 
 
 def generate_pretrain_data(config):
@@ -180,17 +183,19 @@ def generate_pretrain_data(config):
     if total_games % games_per_task:
         task_game_counts.append(total_games % games_per_task)
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=worker_init,
+        initargs=(config.stockfish_path, config.pretrain_hash_mb),
+    ) as executor:
         futures = [
             executor.submit(
                 worker_generate_games,
-                config.stockfish_path,
                 count,
                 config.pretrain_max_moves,
                 (config.pretrain_traj_depth, config.pretrain_depth),
                 config.pretrain_drive_depth,
                 config.pretrain_sample_moves,
-                config.pretrain_hash_mb,
                 config.pretrain_drive_multipv,
                 config.pretrain_sample_multipv,
                 config.pretrain_endgame_weight,
