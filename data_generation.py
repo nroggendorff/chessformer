@@ -1,6 +1,7 @@
 import atexit
 import concurrent.futures
 import multiprocessing as mp
+import os
 import gc
 import math
 import random
@@ -24,10 +25,23 @@ STARTING_NON_KING_MATERIAL = 78
 _ENGINE = None
 
 
-def worker_init(engine_path, hash_mb):
+def pin_to_next_cpu(cpu_counter, cpu_lock):
+    if not hasattr(os, "sched_setaffinity"):
+        return
+    with cpu_lock:
+        cpu_id = cpu_counter.value
+        cpu_counter.value += 1
+    try:
+        os.sched_setaffinity(0, {cpu_id % os.cpu_count()})
+    except OSError:
+        pass
+
+
+def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock):
     global _ENGINE
+    pin_to_next_cpu(cpu_counter, cpu_lock)
     _ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
-    _ENGINE.configure({"Hash": hash_mb})
+    _ENGINE.configure({"Hash": hash_mb, "Threads": 1})
     atexit.register(_ENGINE.quit)
 
 
@@ -184,11 +198,19 @@ def generate_pretrain_data(config):
     if total_games % games_per_task:
         task_game_counts.append(total_games % games_per_task)
 
+    ctx = mp.get_context("spawn")
+    cpu_counter, cpu_lock = ctx.Value("i", 0), ctx.Lock()
+
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=max_workers,
-        mp_context=mp.get_context("spawn"),
+        mp_context=ctx,
         initializer=worker_init,
-        initargs=(config.stockfish_path, config.pretrain_hash_mb),
+        initargs=(
+            config.stockfish_path,
+            config.pretrain_hash_mb,
+            cpu_counter,
+            cpu_lock,
+        ),
     ) as executor:
         futures = [
             executor.submit(
