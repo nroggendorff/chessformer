@@ -1,5 +1,6 @@
 import atexit
 import concurrent.futures
+import multiprocessing as mp
 import gc
 import math
 import random
@@ -185,6 +186,7 @@ def generate_pretrain_data(config):
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=max_workers,
+        mp_context=mp.get_context("spawn"),
         initializer=worker_init,
         initargs=(config.stockfish_path, config.pretrain_hash_mb),
     ) as executor:
