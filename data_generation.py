@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import concurrent.futures
 import multiprocessing as mp
@@ -5,6 +6,8 @@ import os
 import gc
 import math
 import random
+import signal
+import threading
 
 import chess
 import chess.engine
@@ -25,6 +28,23 @@ STARTING_NON_KING_MATERIAL = 78
 _ENGINE = None
 
 
+def _daemon_run_in_background(coroutine, *, name=None, debug=None):
+    future = concurrent.futures.Future()
+
+    def background():
+        try:
+            asyncio.run(coroutine(future), debug=debug)
+            future.cancel()
+        except Exception as exc:
+            future.set_exception(exc)
+
+    threading.Thread(target=background, name=name, daemon=True).start()
+    return future.result()
+
+
+chess.engine.run_in_background = _daemon_run_in_background
+
+
 def pin_to_next_cpu(cpu_counter, cpu_lock):
     if not hasattr(os, "sched_setaffinity"):
         return
@@ -37,12 +57,32 @@ def pin_to_next_cpu(cpu_counter, cpu_lock):
         pass
 
 
+def worker_shutdown(timeout=5):
+    if _ENGINE is None:
+        return
+
+    def _quit():
+        try:
+            _ENGINE.quit()
+        except Exception:
+            pass
+
+    quit_thread = threading.Thread(target=_quit, daemon=True)
+    quit_thread.start()
+    quit_thread.join(timeout=timeout)
+    if quit_thread.is_alive():
+        try:
+            os.kill(_ENGINE.transport.get_pid(), signal.SIGKILL)
+        except Exception:
+            pass
+
+
 def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock):
     global _ENGINE
     pin_to_next_cpu(cpu_counter, cpu_lock)
     _ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
     _ENGINE.configure({"Hash": hash_mb, "Threads": 1})
-    atexit.register(_ENGINE.quit)
+    atexit.register(worker_shutdown)
 
 
 def analyse_full_policy(engine, board, depth, multipv=None):
