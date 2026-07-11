@@ -50,6 +50,9 @@ if __name__ == "__main__":
         build_scheduler,
         default_checkpoint_path,
         get_device,
+        load_optimizer_state,
+        optimizer_state_path,
+        save_optimizer_state,
     )
     from dataset import DEFAULT_PATH, generate_pretrain_dataset, load_pretrain_dataset
     from model import save_checkpoint
@@ -58,15 +61,25 @@ if __name__ == "__main__":
     config = Config()
     device = get_device()
     checkpoint_path = default_checkpoint_path()
+    resuming = os.path.exists(checkpoint_path)
     print(
         f"Resuming pretraining from {checkpoint_path}"
-        if os.path.exists(checkpoint_path)
+        if resuming
         else "Starting pretraining from scratch"
     )
     model, train_model = build_model(config, device, checkpoint_path)
     opt = build_optimizer(model, config)
     scaler = build_scaler(device)
     scheduler = build_scheduler(opt, config.pretrain_steps)
+    if resuming and os.path.exists(optimizer_state_path(checkpoint_path)):
+        load_optimizer_state(opt, scheduler, checkpoint_path)
+        print("Resumed optimizer and LR schedule state from prior run")
+    elif resuming:
+        print(
+            "No saved optimizer state found — this run will restart the LR warmup "
+            "and Adam moments against an already-trained checkpoint, which can "
+            "degrade it. Consider restoring from a backup instead."
+        )
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
@@ -80,3 +93,4 @@ if __name__ == "__main__":
         model, train_model, opt, scaler, scheduler, replay, device, config, {}
     )
     save_checkpoint(model, checkpoint_path)
+    save_optimizer_state(opt, scheduler, checkpoint_path)

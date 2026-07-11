@@ -19,7 +19,9 @@ def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
         if board.is_game_over(claim_draw=True):
             break
         if board.turn == mover:
-            moves, _, _ = batched_policy_step([board], model, device, temperature=0.0)
+            moves, _, _, _ = batched_policy_step(
+                [board], model, device, temperature=0.0
+            )
             board.push(moves[0])
         else:
             board.push(engine.play(board, limit).move)

@@ -10,7 +10,7 @@ from policy import batched_policy_step
 
 
 def bot_move(board, model, device):
-    moves, _, _ = batched_policy_step([board], model, device, temperature=0.0)
+    moves, _, _, _ = batched_policy_step([board], model, device, temperature=0.0)
     return moves[0]
 
 
@@ -61,28 +61,36 @@ class LichessBot:
         threading.Thread(target=self.play_game, args=(game_id,), daemon=True).start()
 
     def play_game(self, game_id):
-        for event in self.client.bots.stream_game_state(game_id):
-            if event["type"] == "gameFull":
-                self.bot_color = (
-                    chess.WHITE
-                    if event["white"].get("id") == self.my_id
-                    else chess.BLACK
-                )
-                self.board = (
-                    chess.Board()
-                    if event["initialFen"] == "startpos"
-                    else chess.Board(event["initialFen"])
-                )
-                self.maybe_move(game_id, event["state"])
-            elif event["type"] == "gameState":
-                self.maybe_move(game_id, event)
-        with self.lock:
-            self.active_game_id = None
+        try:
+            for event in self.client.bots.stream_game_state(game_id):
+                if event["type"] == "gameFull":
+                    self.bot_color = (
+                        chess.WHITE
+                        if event["white"].get("id") == self.my_id
+                        else chess.BLACK
+                    )
+                    self.board = (
+                        chess.Board()
+                        if event["initialFen"] == "startpos"
+                        else chess.Board(event["initialFen"])
+                    )
+                    self.maybe_move(game_id, event["state"])
+                elif event["type"] == "gameState":
+                    self.maybe_move(game_id, event)
+        except Exception as e:
+            print(f"error in game {game_id}: {e}", flush=True)
+        finally:
+            with self.lock:
+                self.active_game_id = None
 
     def maybe_move(self, game_id, state):
         for move in state["moves"].split()[self.board.ply() :]:
             self.board.push_uci(move)
-        if self.board.turn == self.bot_color and not self.board.is_game_over():
+        if (
+            state.get("status", "started") == "started"
+            and self.board.turn == self.bot_color
+            and not self.board.is_game_over()
+        ):
             move = bot_move(self.board, self.model, self.device)
             print(f"playing {move.uci()}", flush=True)
             self.client.bots.make_move(game_id, move.uci())

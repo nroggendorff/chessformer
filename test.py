@@ -212,7 +212,9 @@ def evaluate_move_quality(engine, model, device, positions, depth, multipv=8):
             continue
 
         best_sf_move, best_sf_score = ranked_moves[0]
-        moves, values, _ = batched_policy_step([board], model, device, temperature=0.0)
+        moves, values, _, _ = batched_policy_step(
+            [board], model, device, temperature=0.0
+        )
         model_move, model_value = moves[0], values[0]
 
         rank, move_score = None, None

@@ -44,4 +44,5 @@ def batched_policy_step(boards, model, device, temperature=0.0):
         [move_maps[i][(f, t)] for i, (f, t) in enumerate(zip(from_sq, to_sq))],
         values.cpu().tolist(),
         legal_mask,
+        flat_log_probs.gather(-1, choices[:, None]).squeeze(-1).cpu().tolist(),
     )

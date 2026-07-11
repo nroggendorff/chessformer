@@ -58,7 +58,7 @@ class Config:
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 32
-    self_play_mix_ratio: float = 0.1
+    self_play_mix_ratio: float = 0.0
     self_play_adv_clip: float = 2.0
     self_play_draw_value: float = -0.15
     self_play_quick_win_bonus: float = 0.35
@@ -67,6 +67,10 @@ class Config:
     self_play_rollback_margin: float = 100.0
     self_play_rollback_patience: int = 2
     self_play_kl_coef: float = 0.05
+    self_play_clip_ratio: float = 0.2
+    self_play_pool_size: int = 8
+    self_play_pool_self_prob: float = 0.2
+    self_play_pool_update_interval: int = 100
     self_play_ref_sync_interval: int = 50
 
     elo_eval_count: int = 8
@@ -151,3 +155,20 @@ def build_scheduler(opt, total_steps):
         ],
         milestones=[warmup_steps],
     )
+
+
+def optimizer_state_path(checkpoint_path):
+    return checkpoint_path + ".opt.pt"
+
+
+def save_optimizer_state(opt, scheduler, checkpoint_path):
+    torch.save(
+        {"optimizer": opt.state_dict(), "scheduler": scheduler.state_dict()},
+        optimizer_state_path(checkpoint_path),
+    )
+
+
+def load_optimizer_state(opt, scheduler, checkpoint_path):
+    state = torch.load(optimizer_state_path(checkpoint_path), map_location="cpu")
+    opt.load_state_dict(state["optimizer"])
+    scheduler.load_state_dict(state["scheduler"])

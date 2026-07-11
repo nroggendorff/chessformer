@@ -30,7 +30,7 @@ PIECE_SVGS = {
 
 
 def bot_move(board, model, device):
-    moves, _, _ = batched_policy_step([board], model, device, temperature=0.0)
+    moves, _, _, _ = batched_policy_step([board], model, device, temperature=0.0)
     return moves[0]
 
 

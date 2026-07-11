@@ -49,6 +49,8 @@ class DualRingBuffer:
         self.rl_buf.extend(items)
 
     def sample(self, batch_size, mix_ratio=0.5):
+        if mix_ratio <= 0.0:
+            return self.rl_buf.sample_items(batch_size)
         if not len(self.rl_buf):
             return self.pretrain_buf.sample_items(batch_size)
         if not len(self.pretrain_buf):

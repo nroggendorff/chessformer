@@ -16,7 +16,9 @@ def _dense_policy_and_mask(samples):
     return target_policy, legal_mask
 
 
-def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0):
+def train_batch(
+    model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0, clip_epsilon=0.2
+):
     model.train()
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
@@ -32,6 +34,12 @@ def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0
     value_weights = torch.tensor(
         [s[6] for s in samples], dtype=torch.float32, device=device
     )
+    is_rl_sample = torch.tensor([len(s) > 7 for s in samples], device=device)
+    old_log_probs = torch.tensor(
+        [s[7] if len(s) > 7 else 0.0 for s in samples],
+        dtype=torch.float32,
+        device=device,
+    )
 
     ref_log_probs = None
     if ref_model is not None and kl_coef > 0:
@@ -46,9 +54,14 @@ def train_batch(model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0
         log_probs = joint_move_log_probs(heatmaps, legal_mask).clamp(min=-20.0)
         flat_log_probs = log_probs.view(log_probs.size(0), -1)
         flat_target = target_policy.view(target_policy.size(0), -1)
-        policy_loss = (
-            -(flat_target * flat_log_probs).sum(dim=-1) * policy_weights
-        ).mean()
+        sample_log_probs = (flat_target * flat_log_probs).sum(dim=-1)
+
+        ratio = torch.exp(sample_log_probs - old_log_probs)
+        clipped_ratio = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon)
+        rl_term = -torch.minimum(ratio * policy_weights, clipped_ratio * policy_weights)
+        sft_term = -sample_log_probs * policy_weights
+        policy_loss = torch.where(is_rl_sample, rl_term, sft_term).mean()
+
         entropy = -(flat_log_probs.exp() * flat_log_probs).sum(dim=-1).mean()
         value_loss = (
             value_weights * F.mse_loss(values, target_values, reduction="none")

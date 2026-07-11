@@ -20,18 +20,28 @@ from policy import batched_policy_step
 from training import train_batch
 
 _GLOBAL_MODEL = None
+_GLOBAL_OPPONENT = None
 
 
 def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
-    global _GLOBAL_MODEL
+    global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     torch.set_num_threads(1)
-    _GLOBAL_MODEL = ChessNet(
-        d_model=d_model,
-        nhead=nhead,
-        enc_layers=enc_layers,
-        heatmap_hidden=heatmap_hidden,
-        attn_rank=attn_rank,
-    ).to(torch.device(device_type))
+    _GLOBAL_MODEL, _GLOBAL_OPPONENT = (
+        ChessNet(
+            d_model=d_model,
+            nhead=nhead,
+            enc_layers=enc_layers,
+            heatmap_hidden=heatmap_hidden,
+            attn_rank=attn_rank,
+        ).to(torch.device(device_type))
+        for _ in range(2)
+    )
+
+
+def add_to_pool(pool, model, pool_size):
+    pool.append({k: v.cpu().clone() for k, v in model.state_dict().items()})
+    if len(pool) > pool_size:
+        pool.pop(0)
 
 
 def outcome_targets(
@@ -63,48 +73,81 @@ def play_games_batched(
     quick_win_bonus=0.35,
     decisive_weight=1.5,
     return_clip=1.0,
+    opponent_model=None,
 ):
     model.eval()
+    if opponent_model is not None:
+        opponent_model.eval()
     boards = [chess.Board() for _ in range(num_games)]
+    learner_color = [
+        chess.WHITE if random.random() < 0.5 else chess.BLACK for _ in range(num_games)
+    ]
     trajectories: list[list[dict[str, Any]]] = [[] for _ in range(num_games)]
     finished = [False] * num_games
 
     for ply in range(max_moves):
-        active_indices = [i for i, f in enumerate(finished) if not f]
-        if not active_indices:
+        active = [i for i, f in enumerate(finished) if not f]
+        if not active:
             break
 
-        moves, values, _ = batched_policy_step(
-            [boards[i] for i in active_indices],
-            model,
-            device,
-            temperature=temperature if ply < sample_moves else temperature_floor,
-        )
+        learner_idx = [
+            i
+            for i in active
+            if opponent_model is None or boards[i].turn == learner_color[i]
+        ]
+        opponent_idx = [i for i in active if i not in learner_idx]
 
-        for idx, original_i in enumerate(active_indices):
-            board, move, value = boards[original_i], moves[idx], values[idx]
-            trajectories[original_i].append(
-                {
-                    "board_input": board_to_input(board),
-                    "legal_pairs": np.array(
-                        list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
-                    ),
-                    "policy_pair": np.array(
-                        [
-                            (
-                                canonical_square(move.from_square, board),
-                                canonical_square(move.to_square, board),
-                            )
-                        ],
-                        dtype=np.uint8,
-                    ),
-                    "value_pred": value,
-                    "turn": board.turn,
-                }
+        if learner_idx:
+            moves, values, _, log_probs = batched_policy_step(
+                [boards[i] for i in learner_idx],
+                model,
+                device,
+                temperature=temperature if ply < sample_moves else temperature_floor,
             )
-            board.push(move)
-            if board.is_game_over(claim_draw=True):
-                finished[original_i] = True
+            for idx, original_i in enumerate(learner_idx):
+                board, move, value, log_prob = (
+                    boards[original_i],
+                    moves[idx],
+                    values[idx],
+                    log_probs[idx],
+                )
+                trajectories[original_i].append(
+                    {
+                        "board_input": board_to_input(board),
+                        "legal_pairs": np.array(
+                            list(legal_moves_by_square_pair(board).keys()),
+                            dtype=np.uint8,
+                        ),
+                        "policy_pair": np.array(
+                            [
+                                (
+                                    canonical_square(move.from_square, board),
+                                    canonical_square(move.to_square, board),
+                                )
+                            ],
+                            dtype=np.uint8,
+                        ),
+                        "value_pred": value,
+                        "log_prob": log_prob,
+                        "turn": board.turn,
+                    }
+                )
+                board.push(move)
+                if board.is_game_over(claim_draw=True):
+                    finished[original_i] = True
+
+        if opponent_idx:
+            moves, _, _, _ = batched_policy_step(
+                [boards[i] for i in opponent_idx],
+                opponent_model,
+                device,
+                temperature=temperature_floor,
+            )
+            for idx, original_i in enumerate(opponent_idx):
+                board = boards[original_i]
+                board.push(moves[idx])
+                if board.is_game_over(claim_draw=True):
+                    finished[original_i] = True
 
     raw = []
     for board, trajectory, is_finished in zip(boards, trajectories, finished):
@@ -142,6 +185,7 @@ def play_games_batched(
             g,
             float(w),
             decisive_weight if abs(g) == 1.0 else 1.0,
+            step["log_prob"],
         )
         for (step, g, _), w in zip(raw, normalized)
     ]
@@ -161,8 +205,9 @@ def worker_play_games(
     decisive_weight,
     return_clip,
     device_type,
+    opponent_state_dict=None,
 ):
-    global _GLOBAL_MODEL
+    global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     assert _GLOBAL_MODEL
     random.seed(seed)
     np.random.seed(seed)
@@ -171,6 +216,11 @@ def worker_play_games(
     device = torch.device(device_type)
     _GLOBAL_MODEL.load_state_dict(state_dict)
     _GLOBAL_MODEL.eval()
+    opponent = None
+    if opponent_state_dict is not None:
+        _GLOBAL_OPPONENT.load_state_dict(opponent_state_dict)
+        _GLOBAL_OPPONENT.eval()
+        opponent = _GLOBAL_OPPONENT
 
     return play_games_batched(
         _GLOBAL_MODEL,
@@ -185,6 +235,7 @@ def worker_play_games(
         quick_win_bonus=quick_win_bonus,
         decisive_weight=decisive_weight,
         return_clip=return_clip,
+        opponent_model=opponent,
     )
 
 
@@ -199,6 +250,8 @@ def generate_self_play_data(
     config,
     max_workers=None,
     executor=None,
+    opponent_model=None,
+    opponent_state_dict=None,
 ):
     if device.type in ("cuda", "mps"):
         with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
@@ -215,6 +268,7 @@ def generate_self_play_data(
                 quick_win_bonus=config.self_play_quick_win_bonus,
                 decisive_weight=config.self_play_decisive_weight,
                 return_clip=config.self_play_return_clip,
+                opponent_model=opponent_model,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -241,6 +295,7 @@ def generate_self_play_data(
                 config.self_play_decisive_weight,
                 config.self_play_return_clip,
                 device.type,
+                opponent_state_dict,
             )
             for i, count in enumerate(counts)
         ]
@@ -324,12 +379,33 @@ def run_self_play(
         for p in ref_model.parameters():
             p.requires_grad_(False)
 
+        opponent_model = ChessNet(
+            d_model=config.d_model,
+            nhead=config.nhead,
+            enc_layers=config.enc_layers,
+            heatmap_hidden=config.heatmap_hidden,
+            attn_rank=config.attn_type_rank,
+        ).to(device)
+        opponent_model.eval()
+        for p in opponent_model.parameters():
+            p.requires_grad_(False)
+
+        pool = [elo_state["best_state"]]
+
         pbar = tqdm(
             range(config.self_play_iterations), desc="Self-Play RL Optimization"
         )
         eval_interval = max(1, config.self_play_iterations // config.elo_eval_count)
         bad_evals = 0
         for it in pbar:
+            opponent_state = (
+                None
+                if random.random() < config.self_play_pool_self_prob
+                else random.choice(pool)
+            )
+            if opponent_state is not None and not use_multiprocessing:
+                opponent_model.load_state_dict(opponent_state)
+
             replay.extend_rl(
                 generate_self_play_data(
                     model,
@@ -342,8 +418,13 @@ def run_self_play(
                     config,
                     max_workers=max_workers,
                     executor=executor,
+                    opponent_model=None if opponent_state is None else opponent_model,
+                    opponent_state_dict=opponent_state,
                 )
             )
+
+            if (it + 1) % config.self_play_pool_update_interval == 0:
+                add_to_pool(pool, model, config.self_play_pool_size)
 
             if (it + 1) % config.self_play_ref_sync_interval == 0:
                 ref_model.load_state_dict(model.state_dict())
@@ -356,6 +437,7 @@ def run_self_play(
                         k: v.cpu().clone() for k, v in model.state_dict().items()
                     }
                     ref_model.load_state_dict(model.state_dict())
+                    add_to_pool(pool, model, config.self_play_pool_size)
                     bad_evals = 0
                 elif elo_state["best_elo"] - elo_ema > config.self_play_rollback_margin:
                     bad_evals += 1
@@ -371,36 +453,42 @@ def run_self_play(
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
             )
 
-            if len(replay.pretrain_buf) > 0 or len(replay.rl_buf) > 0:
+            if len(replay.rl_buf) > 0:
                 losses = []
                 for _ in range(config.self_play_gradient_steps):
-                    losses.append(
-                        train_batch(
-                            train_model,
-                            opt,
-                            scaler,
-                            replay.sample(
-                                config.self_play_batch_size,
-                                mix_ratio=config.self_play_mix_ratio,
-                            ),
-                            device,
-                            ref_model=ref_model,
-                            kl_coef=config.self_play_kl_coef,
-                        )
+                    batch = replay.sample(
+                        config.self_play_batch_size,
+                        mix_ratio=config.self_play_mix_ratio,
                     )
+                    if batch:
+                        losses.append(
+                            train_batch(
+                                train_model,
+                                opt,
+                                scaler,
+                                batch,
+                                device,
+                                ref_model=ref_model,
+                                kl_coef=config.self_play_kl_coef,
+                                clip_epsilon=config.self_play_clip_ratio,
+                            )
+                        )
                     scheduler.step()
-                avg_loss, avg_p, avg_v = (
-                    sum(x[i] for x in losses) / len(losses) for i in range(3)
-                )
-                pbar.set_postfix(
-                    {
-                        "loss": f"{avg_loss:.3f}",
-                        "policy": f"{avg_p:.3f}",
-                        "value": f"{avg_v:.3f}",
-                        "rl_buf": len(replay.rl_buf),
-                        **elo_postfix,
-                    }
-                )
+                if losses:
+                    avg_loss, avg_p, avg_v = (
+                        sum(x[i] for x in losses) / len(losses) for i in range(3)
+                    )
+                    pbar.set_postfix(
+                        {
+                            "loss": f"{avg_loss:.3f}",
+                            "policy": f"{avg_p:.3f}",
+                            "value": f"{avg_v:.3f}",
+                            "rl_buf": len(replay.rl_buf),
+                            **elo_postfix,
+                        }
+                    )
+                else:
+                    pbar.set_postfix({"rl_buf": len(replay.rl_buf), **elo_postfix})
             else:
                 pbar.set_postfix({"rl_buf": len(replay.rl_buf), **elo_postfix})
 
