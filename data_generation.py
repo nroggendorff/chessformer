@@ -101,14 +101,17 @@ def win_probability(score, ply):
     return score.wdl(model="sf", ply=ply).expectation()
 
 
-def move_scores(infos, board, temperature):
-    probs = {
-        info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
+def move_scores(infos, board, temperature, cp_scale=100.0):
+    cp_scores = {
+        info["pv"][0]: info["score"].pov(board.turn).score(mate_score=3000)
         for info in infos
         if "pv" in info and len(info["pv"]) > 0
     }
-    best = max(probs.values(), default=0.0)
-    return {move: math.exp((p - best) / temperature) for move, p in probs.items()}
+    best = max(cp_scores.values(), default=0)
+    return {
+        move: math.exp((cp - best) / (cp_scale * temperature))
+        for move, cp in cp_scores.items()
+    }
 
 
 def endgame_weight(board, scale):
