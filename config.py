@@ -40,7 +40,7 @@ class Config:
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 20
     pretrain_traj_depth: int = 3
-    pretrain_depth: int = 8
+    pretrain_depth: int = 9
     pretrain_sample_multipv: int = 12
     pretrain_samples_target: int = 20000000
     pretrain_batch_size: int = 512
@@ -74,9 +74,9 @@ class Config:
     self_play_ref_sync_interval: int = 50
 
     elo_eval_count: int = 8
-    elo_eval_games: int = 24
+    elo_eval_games: int = 50
     elo_eval_anchor: int = 1320
-    elo_eval_max_moves: int = 100
+    elo_eval_max_moves: int = 120
     elo_eval_movetime: float = 0.2
     elo_eval_ema_alpha: float = 0.3
 
