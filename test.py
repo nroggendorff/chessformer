@@ -9,7 +9,13 @@ import chess.engine
 from tqdm import tqdm
 
 from config import Config, default_checkpoint_path, get_device
-from evaluation import clamp_uci_elo, play_eval_game
+from evaluation import (
+    clamp_uci_elo,
+    expected_score,
+    fit_rating,
+    play_eval_game,
+    rating_standard_error,
+)
 from model import load_checkpoint
 from policy import batched_policy_step
 
@@ -123,48 +129,6 @@ def run_adaptive_ladder(stockfish_path, model, device):
                     break
 
     return [tested[i] for i in sorted(tested)]
-
-
-def expected_score(rating, opponent_rating):
-    return 1 / (1 + 10 ** ((opponent_rating - rating) / 400))
-
-
-def fit_rating(calibrated_results, lo=-3000.0, hi=4000.0, iters=80):
-    if not calibrated_results:
-        return None
-
-    total_actual = sum(r["score"] for r in calibrated_results) + 0.5
-
-    for _ in range(iters):
-        mid = (lo + hi) / 2
-        total_expected = sum(
-            r["games"] * expected_score(mid, r["level"]["elo"])
-            for r in calibrated_results
-        ) + (1.0 * expected_score(mid, mid))
-
-        if total_expected < total_actual:
-            lo = mid
-        else:
-            hi = mid
-
-    return (lo + hi) / 2
-
-
-def rating_standard_error(rating, calibrated_results):
-    if not rating or not calibrated_results:
-        return None
-
-    information = sum(
-        r["games"]
-        * expected_score(rating, r["level"]["elo"])
-        * (1 - expected_score(rating, r["level"]["elo"]))
-        for r in calibrated_results
-    )
-    return (
-        400 / (math.log(10) * math.sqrt(information))
-        if information > 0
-        else float("inf")
-    )
 
 
 def load_or_create_positions(path, num_positions, seed):

@@ -1,6 +1,7 @@
 import concurrent.futures
 import contextlib
 import gc
+import math
 import multiprocessing as mp
 import os
 import random
@@ -42,6 +43,12 @@ def add_to_pool(pool, model, pool_size):
     pool.append({k: v.cpu().clone() for k, v in model.state_dict().items()})
     if len(pool) > pool_size:
         pool.pop(0)
+
+
+def elo_z_score(candidate_elo, candidate_se, reference_elo, reference_se):
+    return (candidate_elo - reference_elo) / math.sqrt(
+        (candidate_se or float("inf")) ** 2 + (reference_se or float("inf")) ** 2
+    )
 
 
 def outcome_targets(
@@ -365,7 +372,9 @@ def run_self_play(
         elo_state["best_state"] = {
             k: v.cpu().clone() for k, v in model.state_dict().items()
         }
+        elo_state["best_scheduler_state"] = scheduler.state_dict()
         elo_state["best_elo"] = elo_state["elo_ema"]
+        elo_state["best_se"] = elo_state.get("last_se")
 
         ref_model = ChessNet(
             d_model=config.d_model,
@@ -406,6 +415,7 @@ def run_self_play(
             if opponent_state is not None and not use_multiprocessing:
                 opponent_model.load_state_dict(opponent_state)
 
+            replay.reset_rl()
             replay.extend_rl(
                 generate_self_play_data(
                     model,
@@ -431,18 +441,28 @@ def run_self_play(
 
             if (it + 1) % eval_interval == 0:
                 _, elo_ema = estimate_elo(model, device, config, elo_state)
-                if elo_ema >= elo_state["best_elo"]:
+                z = elo_z_score(
+                    elo_ema,
+                    elo_state["last_se"],
+                    elo_state["best_elo"],
+                    elo_state["best_se"],
+                )
+                if z > config.self_play_promote_z:
                     elo_state["best_elo"] = elo_ema
+                    elo_state["best_se"] = elo_state["last_se"]
                     elo_state["best_state"] = {
                         k: v.cpu().clone() for k, v in model.state_dict().items()
                     }
+                    elo_state["best_scheduler_state"] = scheduler.state_dict()
                     ref_model.load_state_dict(model.state_dict())
                     add_to_pool(pool, model, config.self_play_pool_size)
                     bad_evals = 0
-                elif elo_state["best_elo"] - elo_ema > config.self_play_rollback_margin:
+                elif z < -config.self_play_rollback_z:
                     bad_evals += 1
                     if bad_evals >= config.self_play_rollback_patience:
                         model.load_state_dict(elo_state["best_state"])
+                        scheduler.load_state_dict(elo_state["best_scheduler_state"])
+                        ref_model.load_state_dict(elo_state["best_state"])
                         opt.state.clear()
                         elo_state["elo_ema"] = elo_state["best_elo"]
                         bad_evals = 0
@@ -499,7 +519,13 @@ def run_self_play(
             gc.collect()
 
         final_elo, _ = estimate_elo(model, device, config, elo_state)
-        if final_elo < elo_state["best_elo"] - config.self_play_rollback_margin:
+        z = elo_z_score(
+            final_elo,
+            elo_state["last_se"],
+            elo_state["best_elo"],
+            elo_state["best_se"],
+        )
+        if z < -config.self_play_rollback_z:
             model.load_state_dict(elo_state["best_state"])
 
 

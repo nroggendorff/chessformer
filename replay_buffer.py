@@ -7,6 +7,9 @@ class RingBuffer:
     def __init__(self, capacity):
         self.capacity, self.buf, self.pos = capacity, [], 0
 
+    def reset(self):
+        self.buf, self.pos = [], 0
+
     def extend(self, items):
         for item in items:
             if len(self.buf) < self.capacity:
@@ -47,6 +50,9 @@ class DualRingBuffer:
 
     def extend_rl(self, items):
         self.rl_buf.extend(items)
+
+    def reset_rl(self):
+        self.rl_buf.reset()
 
     def sample(self, batch_size, mix_ratio=0.5):
         if mix_ratio <= 0.0:
