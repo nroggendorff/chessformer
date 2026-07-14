@@ -31,18 +31,21 @@ def batched_policy_step(boards, model, device, temperature=0.0):
     )
     legal_mask = legal_mask.to(device)
     flat_log_probs = joint_move_log_probs(heatmaps, legal_mask).view(len(boards), -1)
+    sampling_log_probs = (
+        flat_log_probs
+        if temperature == 0
+        else F.log_softmax(flat_log_probs / temperature, dim=-1)
+    )
 
     choices = (
         flat_log_probs.argmax(dim=-1)
         if temperature == 0
-        else torch.multinomial(
-            torch.softmax(flat_log_probs / temperature, dim=-1), 1
-        ).squeeze(-1)
+        else torch.multinomial(sampling_log_probs.exp(), 1).squeeze(-1)
     )
     from_sq, to_sq = (choices // 64).tolist(), (choices % 64).tolist()
     return (
         [move_maps[i][(f, t)] for i, (f, t) in enumerate(zip(from_sq, to_sq))],
         values.cpu().tolist(),
         legal_mask,
-        flat_log_probs.gather(-1, choices[:, None]).squeeze(-1).cpu().tolist(),
+        sampling_log_probs.gather(-1, choices[:, None]).squeeze(-1).cpu().tolist(),
     )

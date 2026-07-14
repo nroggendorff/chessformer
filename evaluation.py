@@ -72,12 +72,17 @@ def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
         plies += 1
 
     outcome = board.outcome(claim_draw=True)
-    score = (
-        0.5
-        if outcome is None or outcome.winner is None
-        else float(outcome.winner == mover)
-    )
-    return {"score": score, "plies": plies, "timed_out": outcome is None}
+    timed_out = outcome is None
+    if timed_out:
+        cp = (
+            engine.analyse(board, chess.engine.Limit(depth=10))["score"]
+            .pov(mover)
+            .score(mate_score=10000)
+        )
+        score = 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
+    else:
+        score = 0.5 if outcome.winner is None else float(outcome.winner == mover)
+    return {"score": score, "plies": plies, "timed_out": timed_out}
 
 
 def play_anchor_games(

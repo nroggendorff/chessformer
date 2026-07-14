@@ -11,7 +11,6 @@ from tqdm import tqdm
 from config import Config, default_checkpoint_path, get_device
 from evaluation import (
     clamp_uci_elo,
-    expected_score,
     fit_rating,
     play_eval_game,
     rating_standard_error,
@@ -41,7 +40,7 @@ LADDER = [
 ]
 START_INDEX = 8
 
-GAMES_PER_LEVEL = 8
+GAMES_PER_LEVEL = 16
 MAX_MOVES = 120
 MOVETIME = 0.2
 

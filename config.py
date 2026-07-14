@@ -53,7 +53,7 @@ class Config:
     pretrain_sample_moves: int = 20
     pretrain_traj_depth: int = 3
     pretrain_depth: int = 9
-    pretrain_sample_multipv: int = 12
+    pretrain_sample_multipv: int = 6
     pretrain_node_cap: int | None = 4000000
     pretrain_samples_target: int = 20000000
     pretrain_batch_size: int = 512
@@ -61,7 +61,7 @@ class Config:
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
     pretrain_endgame_weight: float = 2.0
-    pretrain_policy_temperature: float = 0.25
+    pretrain_policy_temperature: float = 0.1
 
     self_play_iterations: int = 1000
     self_play_games_per_iter: int = 128
@@ -70,7 +70,7 @@ class Config:
     self_play_max_moves: int = 150
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
-    self_play_gradient_steps: int = 32
+    self_play_gradient_steps: int = 16
     self_play_mix_ratio: float = 0.0
     self_play_adv_clip: float = 2.0
     self_play_draw_value: float = -0.15
@@ -84,10 +84,10 @@ class Config:
     self_play_clip_ratio: float = 0.2
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.2
-    self_play_pool_update_interval: int = 100
+    self_play_pool_update_interval: int = 25
     self_play_ref_sync_interval: int = 50
 
-    elo_eval_count: int = 8
+    elo_eval_count: int = 16
     elo_eval_games: int = 90
     elo_eval_anchor: int = 1320
     elo_eval_max_moves: int = 120
