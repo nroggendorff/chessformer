@@ -5,6 +5,7 @@ from typing import Optional
 
 import berserk
 import chess
+from tqdm import tqdm
 
 from config import Config, default_checkpoint_path, get_device
 from model import load_checkpoint
@@ -34,8 +35,7 @@ class LichessBot:
         self.device = device
 
         try:
-            account_info = self.client.account.get()
-            self.my_id = account_info["id"]
+            self.my_id = self.client.account.get()["id"]
             logger.info(f"Successfully authenticated as Lichess bot: @{self.my_id}")
         except berserk.exceptions.ResponseError as e:
             logger.critical(
@@ -43,50 +43,63 @@ class LichessBot:
             )
             sys.exit(1)
 
-    def challenge_opponent(self, target_username: str = "dala-1100"):
-        logger.info(f"Sending standard rapid challenge to @{target_username}...")
+    def list_candidate_bots(self, limit: int = 200) -> list[str]:
+        return [
+            b["username"]
+            for b in self.client.bots.get_online_bots(limit)
+            if b.get("id") != self.my_id and not b.get("playing", False)
+        ]
 
+    def challenge_bots(self, usernames: list[str]):
+        if self.check_and_join_ongoing_game():
+            return
+
+        stream = self.client.bots.stream_incoming_events()
+        for username in tqdm(usernames, desc="Challenging bots"):
+            if self._send_challenge(username) and self._await_challenge_outcome(stream):
+                return
+
+        logger.info("Exhausted the list of candidate bots without starting a game.")
+
+    def _send_challenge(self, username: str) -> bool:
+        logger.info(f"Sending standard rapid challenge to @{username}...")
         try:
             challenge = self.client.challenges.create(
-                username=target_username,
+                username=username,
                 rated=False,
                 clock_limit=600,
                 clock_increment=0,
                 color="random",
                 variant="standard",
             )
-            challenge_id = challenge.get("id")
-            logger.info(f"Challenge created successfully! Challenge ID: {challenge_id}")
+            logger.info(
+                f"Challenge created successfully! Challenge ID: {challenge.get('id')}"
+            )
+            return True
         except berserk.exceptions.ResponseError as e:
-            logger.error(f"Failed to create challenge against {target_username}: {e}")
-            return
+            logger.error(f"Failed to create challenge against {username}: {e}")
+            return False
 
-        logger.info("Checking for any immediately started or ongoing games...")
-        if self.check_and_join_ongoing_game():
-            return
+    def _await_challenge_outcome(self, stream) -> bool:
+        for event in stream:
+            logger.debug(f"Received event: {event}")
+            event_type = event.get("type")
 
-        logger.info(
-            "No active games found yet. Listening for incoming Lichess event stream..."
-        )
-        try:
-            for event in self.client.bots.stream_incoming_events():
-                logger.debug(f"Received event: {event}")
+            if event_type == "challengeDeclined":
+                logger.warning("Challenge was declined by the opponent.")
+                return False
 
-                event_type = event.get("type")
-                if event_type == "challengeDeclined":
-                    logger.warning("Challenge was declined by the opponent.")
-                    break
-                elif event_type == "gameStart":
-                    game = event.get("game", {})
-                    game_id = game.get("id") or game.get("gameId")
-                    if game_id:
-                        logger.info(
-                            f"Game started via event stream! Initializing game loop for ID: {game_id}"
-                        )
-                        self.play_game(game_id)
-                        break
-        except Exception as e:
-            logger.error(f"Error reading event stream: {e}", exc_info=True)
+            if event_type == "gameStart":
+                game = event.get("game", {})
+                game_id = game.get("id") or game.get("gameId")
+                if game_id:
+                    logger.info(
+                        f"Game started! Initializing game loop for ID: {game_id}"
+                    )
+                    self.play_game(game_id)
+                    return True
+
+        return False
 
     def check_and_join_ongoing_game(self) -> bool:
         try:
@@ -121,14 +134,14 @@ class LichessBot:
                     )
 
                     board = chess.Board()
-                    moves_str = event.get("state", {}).get("moves", str())
-                    self._update_board(board, moves_str)
+                    self._update_board(
+                        board, event.get("state", {}).get("moves", str())
+                    )
                     self.maybe_move(game_id, board, bot_color)
 
                 elif event_type == "gameState":
-                    moves_str = event.get("moves", str())
                     board = chess.Board()
-                    self._update_board(board, moves_str)
+                    self._update_board(board, event.get("moves", str()))
 
                     status = event.get("status")
                     if status and status != "started":
@@ -189,7 +202,10 @@ def main():
         help="Path to stockfish binary",
     )
     parser.add_argument(
-        "--opponent", default="dala-1100", help="Username of the bot to challenge"
+        "--opponents",
+        default=None,
+        help="Comma-separated usernames to challenge, in order. "
+        "If omitted, online bots are discovered automatically.",
     )
     args = parser.parse_args()
 
@@ -205,7 +221,11 @@ def main():
         sys.exit(1)
 
     bot = LichessBot(args.token, model, device)
-    bot.challenge_opponent(target_username=args.opponent)
+    usernames = (
+        args.opponents.split(",") if args.opponents else bot.list_candidate_bots()
+    )
+    logger.info(f"Candidate bots to challenge: {usernames}")
+    bot.challenge_bots(usernames)
 
 
 if __name__ == "__main__":
