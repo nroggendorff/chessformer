@@ -275,7 +275,6 @@ def generate_pretrain_data(config):
             ): count
             for count in task_game_counts
         }
-        positions = 0
         with tqdm(
             total=total_games, desc="Pretrain data generation", unit="games"
         ) as pbar:
@@ -284,9 +283,7 @@ def generate_pretrain_data(config):
                     samples = f.result()
                 except Exception:
                     samples = []
-                positions += len(samples)
                 yield from samples
                 pbar.update(futures[f])
-                pbar.set_postfix(positions=positions)
                 if i % max_workers == 0:
                     gc.collect()
