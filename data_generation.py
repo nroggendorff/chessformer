@@ -85,13 +85,13 @@ def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock):
     atexit.register(worker_shutdown)
 
 
-def analyse_full_policy(engine, board, depth, multipv=None):
+def analyse_full_policy(engine, board, depth, multipv=None, nodes=None):
     legal_moves = list(board.legal_moves)
     if not legal_moves:
         return None
     infos = engine.analyse(
         board,
-        chess.engine.Limit(depth=depth),
+        chess.engine.Limit(depth=depth, nodes=nodes),
         multipv=min(multipv or len(legal_moves), len(legal_moves)),
     )
     return infos if isinstance(infos, list) else [infos]
@@ -101,17 +101,14 @@ def win_probability(score, ply):
     return score.wdl(model="sf", ply=ply).expectation()
 
 
-def move_scores(infos, board, temperature, cp_scale=100.0):
-    cp_scores = {
-        info["pv"][0]: info["score"].pov(board.turn).score(mate_score=3000)
+def move_scores(infos, board, temperature):
+    win_probs = {
+        info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
         for info in infos
         if "pv" in info and len(info["pv"]) > 0
     }
-    best = max(cp_scores.values(), default=0)
-    return {
-        move: math.exp((cp - best) / (cp_scale * temperature))
-        for move, cp in cp_scores.items()
-    }
+    best = max(win_probs.values(), default=0.0)
+    return {move: math.exp((wp - best) / temperature) for move, wp in win_probs.items()}
 
 
 def endgame_weight(board, scale):
@@ -164,6 +161,7 @@ def generate_game(
     sample_multipv=12,
     endgame_weight_scale=2.0,
     policy_temperature=0.5,
+    node_cap=None,
 ):
     board = chess.Board()
     sample_plies = set(
@@ -180,7 +178,11 @@ def generate_game(
             else drive_depth
         )
         infos = analyse_full_policy(
-            engine, board, depth, multipv=sample_multipv if is_sample else drive_multipv
+            engine,
+            board,
+            depth,
+            multipv=sample_multipv if is_sample else drive_multipv,
+            nodes=node_cap,
         )
         if not infos:
             break
@@ -213,6 +215,7 @@ def worker_generate_games(
     sample_multipv=12,
     endgame_weight_scale=2.0,
     policy_temperature=0.5,
+    node_cap=None,
 ):
     return [
         sample
@@ -227,6 +230,7 @@ def worker_generate_games(
             sample_multipv,
             endgame_weight_scale,
             policy_temperature,
+            node_cap,
         )
     ]
 
@@ -255,7 +259,7 @@ def generate_pretrain_data(config):
             cpu_lock,
         ),
     ) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 worker_generate_games,
                 count,
@@ -267,19 +271,22 @@ def generate_pretrain_data(config):
                 config.pretrain_sample_multipv,
                 config.pretrain_endgame_weight,
                 config.pretrain_policy_temperature,
-            )
+                config.pretrain_node_cap,
+            ): count
             for count in task_game_counts
-        ]
-        for i, f in enumerate(
-            tqdm(
-                concurrent.futures.as_completed(futures),
-                total=len(futures),
-                desc="Pretrain data generation",
-            )
-        ):
-            try:
-                yield from f.result()
-            except Exception:
-                pass
-            if i % max_workers == 0:
-                gc.collect()
+        }
+        positions = 0
+        with tqdm(
+            total=total_games, desc="Pretrain data generation", unit="games"
+        ) as pbar:
+            for i, f in enumerate(concurrent.futures.as_completed(futures)):
+                try:
+                    samples = f.result()
+                except Exception:
+                    samples = []
+                positions += len(samples)
+                yield from samples
+                pbar.update(futures[f])
+                pbar.set_postfix(positions=positions)
+                if i % max_workers == 0:
+                    gc.collect()

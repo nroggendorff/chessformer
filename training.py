@@ -80,7 +80,18 @@ def train_batch(
 
     if not torch.isfinite(loss):
         opt.zero_grad(set_to_none=True)
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
+
+    with torch.no_grad():
+        target_entropy = -(flat_target * torch.log(flat_target.clamp(min=1e-12))).sum(
+            dim=-1
+        )
+        kl_div = (-sample_log_probs.detach() - target_entropy).mean()
+        top1_acc = (
+            (flat_target.argmax(dim=-1) == flat_log_probs.detach().argmax(dim=-1))
+            .float()
+            .mean()
+        )
 
     if scaler is not None:
         scaler.scale(loss).backward()
@@ -93,4 +104,10 @@ def train_batch(
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
 
-    return loss.item(), policy_loss.item(), value_loss.item()
+    return (
+        loss.item(),
+        policy_loss.item(),
+        value_loss.item(),
+        kl_div.item(),
+        top1_acc.item(),
+    )

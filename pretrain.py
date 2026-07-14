@@ -15,7 +15,7 @@ def run_pretraining(
     eval_interval = max(1, config.pretrain_steps // config.elo_eval_count)
     pbar = tqdm(range(config.pretrain_steps), desc="Pretraining Optimization")
     for step in pbar:
-        loss, policy_loss, value_loss = train_batch(
+        loss, policy_loss, value_loss, kl_div, top1_acc = train_batch(
             train_model,
             opt,
             scaler,
@@ -36,6 +36,8 @@ def run_pretraining(
                 "loss": f"{loss:.3f}",
                 "policy": f"{policy_loss:.3f}",
                 "value": f"{value_loss:.3f}",
+                "kl": f"{kl_div:.3f}",
+                "top1": f"{top1_acc:.1%}",
                 **elo_postfix,
             }
         )

@@ -29,6 +29,18 @@ def default_checkpoint_path():
     )
 
 
+def physical_cpu_count():
+    if not os.path.exists("/proc/cpuinfo"):
+        return None
+    physical_ids, current_physical = set(), None
+    for line in open("/proc/cpuinfo"):
+        if line.startswith("physical id"):
+            current_physical = line.split(":")[1].strip()
+        elif line.startswith("core id") and current_physical is not None:
+            physical_ids.add((current_physical, line.split(":")[1].strip()))
+    return len(physical_ids) or None
+
+
 @dataclass
 class Config:
     stockfish_path: str = field(
@@ -42,6 +54,7 @@ class Config:
     pretrain_traj_depth: int = 3
     pretrain_depth: int = 9
     pretrain_sample_multipv: int = 12
+    pretrain_node_cap: int | None = 4000000
     pretrain_samples_target: int = 20000000
     pretrain_batch_size: int = 512
     pretrain_hash_mb: int = 128
@@ -87,17 +100,17 @@ class Config:
     lr: float = 3e-4
     weight_decay: float = 1e-2
 
-    d_model: int = 384
-    nhead: int = 6
-    enc_layers: int = 12
-    heatmap_hidden: int = 192
+    d_model: int = 256
+    nhead: int = 8
+    enc_layers: int = 8
+    heatmap_hidden: int = 128
     attn_type_rank: int = 16
 
     max_workers: int | None = None
 
     def __post_init__(self):
         if self.max_workers is None:
-            self.max_workers = multiprocessing.cpu_count()
+            self.max_workers = physical_cpu_count() or multiprocessing.cpu_count()
 
     @property
     def pretrain_steps(self):
