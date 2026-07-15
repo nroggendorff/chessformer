@@ -56,10 +56,9 @@ class LichessBot:
 
         stream = self.client.bots.stream_incoming_events()
         for username in tqdm(usernames, desc="Challenging bots"):
-            if self._send_challenge(username) and self._await_challenge_outcome(stream):
-                return
+            self._send_challenge(username) and self._await_challenge_outcome(stream)
 
-        logger.info("Exhausted the list of candidate bots without starting a game.")
+        logger.info("Finished challenging the candidate bot list.")
 
     def _send_challenge(self, username: str) -> bool:
         logger.info(f"Sending standard rapid challenge to @{username}...")
