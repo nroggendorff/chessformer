@@ -47,13 +47,13 @@ class Config:
         default_factory=lambda: shutil.which("stockfish") or "/usr/games/stockfish"
     )
 
-    pretrain_games: int = 130000
+    pretrain_games: int = 25000
     pretrain_games_per_task: int = 2
     pretrain_max_moves: int = 120
-    pretrain_sample_moves: int = 20
-    pretrain_traj_depth: int = 3
-    pretrain_depth: int = 9
-    pretrain_sample_multipv: int = 6
+    pretrain_sample_moves: int = 30
+    pretrain_traj_depth: int = 4
+    pretrain_depth: int = 16
+    pretrain_sample_multipv: int = 8
     pretrain_node_cap: int | None = 4000000
     pretrain_samples_target: int = 20000000
     pretrain_batch_size: int = 512
@@ -61,9 +61,13 @@ class Config:
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
     pretrain_endgame_weight: float = 2.0
-    pretrain_policy_temperature: float = 0.1
+    pretrain_policy_temperature: float = 0.06
+    pretrain_drive_temperature: float = 0.3
+    pretrain_min_sample_ply: int = 10
+    pretrain_max_sample_win_prob: float = 0.85
+    pretrain_min_sample_entropy: float = 0.3
 
-    self_play_iterations: int = 1000
+    self_play_iterations: int = 400
     self_play_games_per_iter: int = 128
     self_play_temperature: float = 1.0
     self_play_temperature_floor: float = 0.25
@@ -71,7 +75,7 @@ class Config:
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 16
-    self_play_mix_ratio: float = 0.0
+    self_play_mix_ratio: float = 0.5
     self_play_adv_clip: float = 2.0
     self_play_draw_value: float = -0.15
     self_play_quick_win_bonus: float = 0.35
@@ -100,10 +104,10 @@ class Config:
     lr: float = 3e-4
     weight_decay: float = 1e-2
 
-    d_model: int = 256
-    nhead: int = 8
-    enc_layers: int = 8
-    heatmap_hidden: int = 128
+    d_model: int = 64
+    nhead: int = 4
+    enc_layers: int = 6
+    heatmap_hidden: int = 32
     attn_type_rank: int = 16
 
     max_workers: int | None = None

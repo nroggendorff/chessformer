@@ -151,17 +151,39 @@ def position_label(win_prob, scores, board, weight=1.0):
     }
 
 
+def _should_sample_position(ply, win_probs, min_sample_ply, max_win_prob, min_entropy):
+    if ply < min_sample_ply:
+        return False
+    if not win_probs:
+        return False
+    best_wp = max(win_probs.values())
+    if best_wp > max_win_prob:
+        return False
+    if len(win_probs) < 2:
+        return False
+    total = sum(win_probs.values())
+    if total <= 0:
+        return False
+    probs = [wp / total for wp in win_probs.values()]
+    entropy = -sum(p * math.log(p) for p in probs if p > 1e-10)
+    return entropy >= min_entropy
+
+
 def generate_game(
     engine,
     max_moves=60,
-    depth_range=(2, 8),
+    depth_range=(4, 16),
     drive_depth=3,
     sample_moves=None,
     drive_multipv=8,
-    sample_multipv=12,
+    sample_multipv=8,
     endgame_weight_scale=2.0,
-    policy_temperature=0.5,
+    policy_temperature=0.06,
+    drive_temperature=0.3,
     node_cap=None,
+    min_sample_ply=10,
+    max_sample_win_prob=0.85,
+    min_sample_entropy=0.3,
 ):
     board = chess.Board()
     sample_plies = set(
@@ -187,8 +209,21 @@ def generate_game(
         if not infos:
             break
 
-        scores = move_scores(infos, board, policy_temperature)
-        if is_sample:
+        scores = move_scores(
+            infos, board, policy_temperature if is_sample else drive_temperature
+        )
+        win_probs = {
+            info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
+            for info in infos
+            if "pv" in info and len(info["pv"]) > 0
+        }
+        if is_sample and _should_sample_position(
+            board.ply(),
+            win_probs,
+            min_sample_ply,
+            max_sample_win_prob,
+            min_sample_entropy,
+        ):
             samples.append(
                 position_label(
                     win_probability(infos[0]["score"].pov(board.turn), board.ply()),
@@ -208,14 +243,18 @@ def generate_game(
 def worker_generate_games(
     num_games,
     max_moves=60,
-    depth_range=(2, 8),
+    depth_range=(4, 16),
     drive_depth=3,
     sample_moves=None,
     drive_multipv=8,
-    sample_multipv=12,
+    sample_multipv=8,
     endgame_weight_scale=2.0,
-    policy_temperature=0.5,
+    policy_temperature=0.06,
+    drive_temperature=0.3,
     node_cap=None,
+    min_sample_ply=10,
+    max_sample_win_prob=0.85,
+    min_sample_entropy=0.3,
 ):
     return [
         sample
@@ -230,7 +269,11 @@ def worker_generate_games(
             sample_multipv,
             endgame_weight_scale,
             policy_temperature,
+            drive_temperature,
             node_cap,
+            min_sample_ply,
+            max_sample_win_prob,
+            min_sample_entropy,
         )
     ]
 
@@ -271,7 +314,11 @@ def generate_pretrain_data(config):
                 config.pretrain_sample_multipv,
                 config.pretrain_endgame_weight,
                 config.pretrain_policy_temperature,
+                config.pretrain_drive_temperature,
                 config.pretrain_node_cap,
+                config.pretrain_min_sample_ply,
+                config.pretrain_max_sample_win_prob,
+                config.pretrain_min_sample_entropy,
             ): count
             for count in task_game_counts
         }

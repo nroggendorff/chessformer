@@ -51,6 +51,12 @@ def elo_z_score(candidate_elo, candidate_se, reference_elo, reference_se):
     )
 
 
+def game_over(board, ply, draw_check_interval=4):
+    if board.is_checkmate() or board.is_stalemate() or board.is_insufficient_material():
+        return True
+    return ply % draw_check_interval == 0 and board.is_game_over(claim_draw=True)
+
+
 def outcome_targets(
     outcome, turn, plies, max_moves, draw_value, quick_win_bonus, return_clip
 ):
@@ -136,11 +142,14 @@ def play_games_batched(
                         ),
                         "value_pred": value,
                         "log_prob": log_prob,
+                        "temperature": (
+                            temperature if ply < sample_moves else temperature_floor
+                        ),
                         "turn": board.turn,
                     }
                 )
                 board.push(move)
-                if board.is_game_over(claim_draw=True):
+                if game_over(board, ply):
                     finished[original_i] = True
 
         if opponent_idx:
@@ -153,24 +162,27 @@ def play_games_batched(
             for idx, original_i in enumerate(opponent_idx):
                 board = boards[original_i]
                 board.push(moves[idx])
-                if board.is_game_over(claim_draw=True):
+                if game_over(board, ply):
                     finished[original_i] = True
 
     raw = []
     for board, trajectory, is_finished in zip(boards, trajectories, finished):
-        if not trajectory or not is_finished:
+        if not trajectory:
             continue
-        outcome = board.outcome(claim_draw=True)
+        outcome = board.outcome(claim_draw=True) if is_finished else None
         for step_index, step in enumerate(trajectory):
-            value_target, policy_target = outcome_targets(
-                outcome,
-                step["turn"],
-                len(trajectory) - step_index,
-                max_moves,
-                draw_value,
-                quick_win_bonus,
-                return_clip,
-            )
+            if outcome is not None:
+                value_target, policy_target = outcome_targets(
+                    outcome,
+                    step["turn"],
+                    len(trajectory) - step_index,
+                    max_moves,
+                    draw_value,
+                    quick_win_bonus,
+                    return_clip,
+                )
+            else:
+                value_target = policy_target = draw_value
             raw.append((step, value_target, policy_target - step["value_pred"]))
 
     if not raw:
@@ -193,6 +205,7 @@ def play_games_batched(
             float(w),
             decisive_weight if abs(g) == 1.0 else 1.0,
             step["log_prob"],
+            step["temperature"],
         )
         for (step, g, _), w in zip(raw, normalized)
     ]
