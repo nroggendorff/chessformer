@@ -7,13 +7,22 @@ from training import train_batch
 
 
 def run_pretraining(
-    model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
+    model,
+    train_model,
+    opt,
+    scaler,
+    scheduler,
+    replay,
+    device,
+    config,
+    elo_state,
+    total_steps,
 ):
     if len(replay.pretrain_buf) < config.pretrain_batch_size:
         return
 
-    eval_interval = max(1, config.pretrain_steps // config.elo_eval_count)
-    pbar = tqdm(range(config.pretrain_steps), desc="Pretraining Optimization")
+    eval_interval = max(1, total_steps // config.elo_eval_count)
+    pbar = tqdm(range(total_steps), desc="Pretraining Optimization")
     for step in pbar:
         loss, policy_loss, value_loss, kl_div, top1_acc = train_batch(
             train_model,
@@ -72,7 +81,19 @@ if __name__ == "__main__":
     model, train_model = build_model(config, device, checkpoint_path)
     opt = build_optimizer(model, config)
     scaler = build_scaler(device)
-    scheduler = build_scheduler(opt, config.pretrain_steps)
+    replay = DualRingBuffer(
+        pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
+    )
+    replay.extend_pretrain(
+        load_pretrain_dataset(DEFAULT_PATH)
+        if os.path.exists(DEFAULT_PATH)
+        else generate_pretrain_dataset(config, DEFAULT_PATH)
+    )
+    total_steps = config.pretrain_steps_for(len(replay.pretrain_buf))
+    print(
+        f"Training for {total_steps} steps ({config.pretrain_epochs} epochs over {len(replay.pretrain_buf)} examples)"
+    )
+    scheduler = build_scheduler(opt, total_steps)
     if resuming and os.path.exists(optimizer_state_path(checkpoint_path)):
         load_optimizer_state(opt, scheduler, checkpoint_path)
         print("Resumed optimizer and LR schedule state from prior run")
@@ -82,17 +103,18 @@ if __name__ == "__main__":
             "and Adam moments against an already-trained checkpoint, which can "
             "degrade it. Consider restoring from a backup instead."
         )
-    replay = DualRingBuffer(
-        pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
-    )
-    replay.extend_pretrain(
-        load_pretrain_dataset(DEFAULT_PATH)
-        if os.path.exists(DEFAULT_PATH)
-        else generate_pretrain_dataset(config, DEFAULT_PATH)
-    )
 
     run_pretraining(
-        model, train_model, opt, scaler, scheduler, replay, device, config, {}
+        model,
+        train_model,
+        opt,
+        scaler,
+        scheduler,
+        replay,
+        device,
+        config,
+        {},
+        total_steps,
     )
     save_checkpoint(model, checkpoint_path)
     save_optimizer_state(opt, scheduler, checkpoint_path)

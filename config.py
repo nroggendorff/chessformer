@@ -55,7 +55,7 @@ class Config:
     pretrain_depth: int = 16
     pretrain_sample_multipv: int = 8
     pretrain_node_cap: int | None = 4000000
-    pretrain_samples_target: int = 20000000
+    pretrain_epochs: int = 10
     pretrain_batch_size: int = 512
     pretrain_hash_mb: int = 128
     pretrain_drive_depth: int = 3
@@ -101,7 +101,7 @@ class Config:
     pretrain_capacity: int = 55360000
     rl_capacity: int = 200000
 
-    lr: float = 3e-4
+    lr: float = 4e-4
     weight_decay: float = 1e-2
 
     d_model: int = 64
@@ -116,9 +116,8 @@ class Config:
         if self.max_workers is None:
             self.max_workers = physical_cpu_count() or multiprocessing.cpu_count()
 
-    @property
-    def pretrain_steps(self):
-        return max(1, self.pretrain_samples_target // self.pretrain_batch_size)
+    def pretrain_steps_for(self, dataset_size):
+        return max(1, self.pretrain_epochs * dataset_size // self.pretrain_batch_size)
 
 
 def build_model(config, device, checkpoint_path=None):

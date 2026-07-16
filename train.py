@@ -28,11 +28,6 @@ def main():
     model, train_model = build_model(config, device)
     opt = build_optimizer(model, config)
     scaler = build_scaler(device)
-    scheduler = build_scheduler(
-        opt,
-        config.pretrain_steps
-        + config.self_play_iterations * config.self_play_gradient_steps,
-    )
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
@@ -44,10 +39,28 @@ def main():
         if os.path.exists(DEFAULT_PATH)
         else generate_pretrain_dataset(config, DEFAULT_PATH)
     )
+    pretrain_steps = config.pretrain_steps_for(len(replay.pretrain_buf))
+    print(
+        f"Training for {pretrain_steps} steps "
+        f"({config.pretrain_epochs} epochs over {len(replay.pretrain_buf)} examples)"
+    )
+    scheduler = build_scheduler(
+        opt,
+        pretrain_steps + config.self_play_iterations * config.self_play_gradient_steps,
+    )
 
     elo_state = {}
     run_pretraining(
-        model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
+        model,
+        train_model,
+        opt,
+        scaler,
+        scheduler,
+        replay,
+        device,
+        config,
+        elo_state,
+        pretrain_steps,
     )
     run_self_play(
         model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
