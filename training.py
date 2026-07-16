@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from config import amp_dtype
+from diffuser import board_images, vae_loss
 from policy import joint_move_log_probs
 
 
@@ -17,9 +18,24 @@ def _dense_policy_and_mask(samples):
 
 
 def train_batch(
-    model, opt, scaler, samples, device, ref_model=None, kl_coef=0.0, clip_epsilon=0.2
+    model,
+    opt,
+    scaler,
+    samples,
+    device,
+    ref_model=None,
+    kl_coef=0.0,
+    clip_epsilon=0.2,
+    vae=None,
+    vae_opt=None,
+    vae_kl_weight=1e-6,
+    vae_loss_weight=0.1,
+    use_diffuser=False,
+    diffuser_steps=8,
 ):
     model.train()
+    if vae is not None:
+        vae.train()
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
     target_policy_np, legal_mask_np = _dense_policy_and_mask(samples)
@@ -50,12 +66,17 @@ def train_batch(
     if ref_model is not None and kl_coef > 0:
         with torch.no_grad():
             ref_log_probs = joint_move_log_probs(
-                ref_model(boards)[0], legal_mask
+                ref_model(
+                    boards, use_diffuser=use_diffuser, diffuser_steps=diffuser_steps
+                )[0],
+                legal_mask,
             ).clamp(min=-20.0)
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
-        heatmaps, values = model(boards)
+        heatmaps, values = model(
+            boards, use_diffuser=use_diffuser, diffuser_steps=diffuser_steps
+        )
         log_probs = joint_move_log_probs(heatmaps, legal_mask).clamp(min=-20.0)
         flat_log_probs = log_probs.view(log_probs.size(0), -1)
         flat_target = target_policy.view(target_policy.size(0), -1)
@@ -75,6 +96,9 @@ def train_batch(
             value_weights * F.mse_loss(values, target_values, reduction="none")
         ).mean()
         loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
+        if vae is not None:
+            aux_loss = vae_loss(vae, board_images(boards).to(device), vae_kl_weight)
+            loss = loss + vae_loss_weight * aux_loss
         if ref_model is not None and kl_coef > 0:
             assert ref_log_probs is not None
             loss = (
@@ -101,16 +125,26 @@ def train_batch(
             .mean()
         )
 
+    if vae is not None:
+        vae_opt.zero_grad(set_to_none=True)
+
     if scaler is not None:
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(opt)
+        if vae is not None:
+            scaler.unscale_(vae_opt)
+            nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
+            scaler.step(vae_opt)
         scaler.update()
     else:
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
+        if vae is not None:
+            nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
+            vae_opt.step()
 
     return (
         loss.item(),

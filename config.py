@@ -110,6 +110,17 @@ class Config:
     heatmap_hidden: int = 32
     attn_type_rank: int = 16
 
+    vae_lr: float = 1e-4
+    vae_kl_weight: float = 1e-6
+    vae_loss_weight: float = 0.1
+
+    diffuser_enabled: bool = True
+    diffuser_hidden: int = 256
+    diffuser_depth: int = 4
+    diffuser_lr: float = 3e-4
+    diffuser_train_timesteps: int = 100
+    diffuser_inference_steps: int = 8
+
     max_workers: int | None = None
 
     def __post_init__(self):
@@ -127,6 +138,9 @@ def build_model(config, device, checkpoint_path=None):
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
         attn_rank=config.attn_type_rank,
+        diffuser_hidden=config.diffuser_hidden,
+        diffuser_depth=config.diffuser_depth,
+        diffuser_train_timesteps=config.diffuser_train_timesteps,
     ).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(load_file(checkpoint_path, device="cpu"))
@@ -138,9 +152,10 @@ def build_model(config, device, checkpoint_path=None):
 
 def build_optimizer(model, config):
     decay, no_decay = [], []
-    for param in model.parameters():
-        if param.requires_grad:
-            (no_decay if param.ndim < 2 else decay).append(param)
+    for name, param in model.named_parameters():
+        if not param.requires_grad or name.startswith(("vae.", "diffuser.")):
+            continue
+        (no_decay if param.ndim < 2 else decay).append(param)
     return torch.optim.AdamW(
         [
             {"params": decay, "weight_decay": config.weight_decay},

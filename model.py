@@ -4,6 +4,13 @@ import torch
 import torch.nn as nn
 from safetensors.torch import load_file, save_file
 
+from diffuser import (
+    build_noise_scheduler,
+    build_vae,
+    infer_latent_dim,
+    tokens_to_image,
+    DiffuserNet,
+)
 from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN, VOCAB_SIZE
 from piece_attention import PieceAwareEncoder, kv_color_ids, query_type_ids
 
@@ -16,7 +23,15 @@ class ChessNet(nn.Module):
     meta_positions: torch.Tensor
 
     def __init__(
-        self, d_model=128, nhead=4, enc_layers=2, heatmap_hidden=128, attn_rank=32
+        self,
+        d_model=128,
+        nhead=4,
+        enc_layers=2,
+        heatmap_hidden=128,
+        attn_rank=32,
+        diffuser_hidden=256,
+        diffuser_depth=4,
+        diffuser_train_timesteps=100,
     ):
         super().__init__()
         self.d_model = d_model
@@ -37,6 +52,16 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, 1),
         )
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(d_model, heatmap_hidden),
+            nn.GELU(),
+            nn.Linear(heatmap_hidden, 1),
+        )
+        self.vae = build_vae()
+        self.diffuser = DiffuserNet(
+            infer_latent_dim(self.vae), diffuser_hidden, diffuser_depth
+        )
+        self.diffuser_scheduler = build_noise_scheduler(diffuser_train_timesteps)
         (
             self.legal_from_emb,
             self.legal_to_emb,
@@ -51,7 +76,7 @@ class ChessNet(nn.Module):
             "meta_positions", torch.arange(SEQ_LEN - BOARD_SQUARES), persistent=False
         )
 
-    def forward(self, board_input):
+    def forward(self, board_input, use_diffuser=False, diffuser_steps=8):
         B = board_input.size(0)
         board_tokens, meta_tokens = (
             board_input[:, :BOARD_SQUARES],
@@ -100,10 +125,33 @@ class ChessNet(nn.Module):
                 dim=1,
             ),
         )
-        return (
-            self.heatmap_mlp(encoded[:, :BOARD_SQUARES]),
-            self.value_mlp(encoded.mean(dim=1)).squeeze(-1).tanh(),
+        pooled = encoded.mean(dim=1)
+        heatmap = self.heatmap_mlp(encoded[:, :BOARD_SQUARES])
+        if use_diffuser:
+            gate = torch.sigmoid(self.gate_mlp(pooled)).unsqueeze(-1)
+            with torch.no_grad():
+                offset = self._diffuser_offset(board_tokens, diffuser_steps)
+            heatmap = heatmap + gate * offset
+        return heatmap, self.value_mlp(pooled).squeeze(-1).tanh()
+
+    def _diffuser_offset(self, board_tokens, num_inference_steps):
+        device = board_tokens.device
+        cond_latent = self.vae.encode(tokens_to_image(board_tokens)).latent_dist.mode()
+        latent = torch.randn_like(cond_latent)
+
+        self.diffuser_scheduler.set_timesteps(num_inference_steps, device=device)
+        for t in self.diffuser_scheduler.timesteps:
+            pred_noise = self.diffuser(
+                latent.flatten(1), t.expand(latent.size(0)), cond_latent.flatten(1)
+            ).view_as(latent)
+            latent = self.diffuser_scheduler.step(pred_noise, t, latent).prev_sample
+
+        image = self.vae.decode(latent).sample.reshape(
+            board_tokens.size(0), -1, BOARD_SQUARES
         )
+        return image[
+            torch.arange(board_tokens.size(0), device=device)[:, None], board_tokens
+        ]
 
 
 def load_checkpoint(path, device, config):
@@ -113,6 +161,9 @@ def load_checkpoint(path, device, config):
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
         attn_rank=config.attn_type_rank,
+        diffuser_hidden=config.diffuser_hidden,
+        diffuser_depth=config.diffuser_depth,
+        diffuser_train_timesteps=config.diffuser_train_timesteps,
     ).to(device)
     model.load_state_dict(load_file(path, device="cpu"))
     model.eval()

@@ -32,6 +32,13 @@ def main():
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
 
+    vae_opt = torch.optim.AdamW(model.vae.parameters(), lr=config.vae_lr)
+    diffuser_opt = (
+        torch.optim.AdamW(model.diffuser.parameters(), lr=config.diffuser_lr)
+        if config.diffuser_enabled
+        else None
+    )
+
     print(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     replay.extend_pretrain(
@@ -61,6 +68,11 @@ def main():
         config,
         elo_state,
         pretrain_steps,
+        vae=model.vae,
+        vae_opt=vae_opt,
+        diffuser=model.diffuser if config.diffuser_enabled else None,
+        diffuser_opt=diffuser_opt,
+        diffuser_scheduler=model.diffuser_scheduler,
     )
     run_self_play(
         model, train_model, opt, scaler, scheduler, replay, device, config, elo_state

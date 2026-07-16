@@ -24,7 +24,17 @@ _GLOBAL_MODEL = None
 _GLOBAL_OPPONENT = None
 
 
-def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
+def worker_init(
+    device_type,
+    d_model,
+    nhead,
+    enc_layers,
+    heatmap_hidden,
+    attn_rank,
+    diffuser_hidden,
+    diffuser_depth,
+    diffuser_train_timesteps,
+):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     torch.set_num_threads(1)
     _GLOBAL_MODEL, _GLOBAL_OPPONENT = (
@@ -34,6 +44,9 @@ def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_ra
             enc_layers=enc_layers,
             heatmap_hidden=heatmap_hidden,
             attn_rank=attn_rank,
+            diffuser_hidden=diffuser_hidden,
+            diffuser_depth=diffuser_depth,
+            diffuser_train_timesteps=diffuser_train_timesteps,
         ).to(torch.device(device_type))
         for _ in range(2)
     )
@@ -87,6 +100,8 @@ def play_games_batched(
     decisive_weight=1.5,
     return_clip=1.0,
     opponent_model=None,
+    use_diffuser=False,
+    diffuser_steps=8,
 ):
     model.eval()
     if opponent_model is not None:
@@ -116,6 +131,8 @@ def play_games_batched(
                 model,
                 device,
                 temperature=temperature if ply < sample_moves else temperature_floor,
+                use_diffuser=use_diffuser,
+                diffuser_steps=diffuser_steps,
             )
             for idx, original_i in enumerate(learner_idx):
                 board, move, value, log_prob = (
@@ -226,6 +243,8 @@ def worker_play_games(
     return_clip,
     device_type,
     opponent_state_dict=None,
+    use_diffuser=False,
+    diffuser_steps=8,
 ):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     assert _GLOBAL_MODEL
@@ -256,6 +275,8 @@ def worker_play_games(
         decisive_weight=decisive_weight,
         return_clip=return_clip,
         opponent_model=opponent,
+        use_diffuser=use_diffuser,
+        diffuser_steps=diffuser_steps,
     )
 
 
@@ -289,6 +310,8 @@ def generate_self_play_data(
                 decisive_weight=config.self_play_decisive_weight,
                 return_clip=config.self_play_return_clip,
                 opponent_model=opponent_model,
+                use_diffuser=config.diffuser_enabled,
+                diffuser_steps=config.diffuser_inference_steps,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -316,6 +339,8 @@ def generate_self_play_data(
                 config.self_play_return_clip,
                 device.type,
                 opponent_state_dict,
+                config.diffuser_enabled,
+                config.diffuser_inference_steps,
             )
             for i, count in enumerate(counts)
         ]
@@ -335,6 +360,9 @@ def generate_self_play_data(
             config.enc_layers,
             config.heatmap_hidden,
             config.attn_type_rank,
+            config.diffuser_hidden,
+            config.diffuser_depth,
+            config.diffuser_train_timesteps,
         ),
     ) as fresh_executor:
         futures = submit(fresh_executor)
@@ -372,6 +400,9 @@ def run_self_play(
                 config.enc_layers,
                 config.heatmap_hidden,
                 config.attn_type_rank,
+                config.diffuser_hidden,
+                config.diffuser_depth,
+                config.diffuser_train_timesteps,
             ),
         )
         if use_multiprocessing
@@ -395,6 +426,9 @@ def run_self_play(
             enc_layers=config.enc_layers,
             heatmap_hidden=config.heatmap_hidden,
             attn_rank=config.attn_type_rank,
+            diffuser_hidden=config.diffuser_hidden,
+            diffuser_depth=config.diffuser_depth,
+            diffuser_train_timesteps=config.diffuser_train_timesteps,
         ).to(device)
         ref_model.load_state_dict(model.state_dict())
         ref_model.eval()
@@ -407,6 +441,9 @@ def run_self_play(
             enc_layers=config.enc_layers,
             heatmap_hidden=config.heatmap_hidden,
             attn_rank=config.attn_type_rank,
+            diffuser_hidden=config.diffuser_hidden,
+            diffuser_depth=config.diffuser_depth,
+            diffuser_train_timesteps=config.diffuser_train_timesteps,
         ).to(device)
         opponent_model.eval()
         for p in opponent_model.parameters():
@@ -504,6 +541,8 @@ def run_self_play(
                                 ref_model=ref_model,
                                 kl_coef=config.self_play_kl_coef,
                                 clip_epsilon=config.self_play_clip_ratio,
+                                use_diffuser=config.diffuser_enabled,
+                                diffuser_steps=config.diffuser_inference_steps,
                             )
                         )
                     scheduler.step()

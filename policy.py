@@ -22,12 +22,16 @@ def joint_move_log_probs(heatmaps, legal_mask):
 
 
 @torch.inference_mode()
-def batched_policy_step(boards, model, device, temperature=0.0):
+def batched_policy_step(
+    boards, model, device, temperature=0.0, use_diffuser=False, diffuser_steps=8
+):
     move_maps, legal_mask = legal_mask_and_move_maps(boards)
     heatmaps, values = model(
         torch.tensor(
             [board_to_input(board) for board in boards], dtype=torch.long, device=device
-        )
+        ),
+        use_diffuser=use_diffuser,
+        diffuser_steps=diffuser_steps,
     )
     legal_mask = legal_mask.to(device)
     flat_log_probs = joint_move_log_probs(heatmaps, legal_mask).view(len(boards), -1)
