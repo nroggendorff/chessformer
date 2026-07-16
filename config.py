@@ -55,8 +55,8 @@ class Config:
     pretrain_depth: int = 16
     pretrain_sample_multipv: int = 8
     pretrain_node_cap: int | None = 4000000
-    pretrain_epochs: int = 10
-    pretrain_batch_size: int = 512
+    pretrain_epochs: int = 4
+    pretrain_batch_size: int = 128
     pretrain_hash_mb: int = 128
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
@@ -91,7 +91,7 @@ class Config:
     self_play_pool_update_interval: int = 25
     self_play_ref_sync_interval: int = 50
 
-    elo_eval_count: int = 16
+    elo_eval_count: int = 4
     elo_eval_games: int = 90
     elo_eval_anchor: int = 1320
     elo_eval_max_moves: int = 120
