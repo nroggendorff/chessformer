@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -73,6 +74,8 @@ def tokens_to_image(tokens):
 
 
 def board_images(board_inputs):
+    if isinstance(board_inputs, (list, tuple)):
+        board_inputs = np.array(board_inputs)
     return tokens_to_image(torch.as_tensor(board_inputs)[:, :BOARD_SQUARES])
 
 
