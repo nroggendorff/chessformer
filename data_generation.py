@@ -77,11 +77,15 @@ def worker_shutdown(timeout=5):
             pass
 
 
-def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock):
-    global _ENGINE
+_GAME_COUNTER = None
+
+
+def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock, game_counter):
+    global _ENGINE, _GAME_COUNTER
     pin_to_next_cpu(cpu_counter, cpu_lock)
     _ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
     _ENGINE.configure({"Hash": hash_mb, "Threads": 1})
+    _GAME_COUNTER = game_counter
     atexit.register(worker_shutdown)
 
 
@@ -256,40 +260,43 @@ def worker_generate_games(
     max_sample_win_prob=0.85,
     min_sample_entropy=0.3,
 ):
-    return [
-        sample
-        for _ in range(num_games)
-        for sample in generate_game(
-            _ENGINE,
-            max_moves,
-            depth_range,
-            drive_depth,
-            sample_moves,
-            drive_multipv,
-            sample_multipv,
-            endgame_weight_scale,
-            policy_temperature,
-            drive_temperature,
-            node_cap,
-            min_sample_ply,
-            max_sample_win_prob,
-            min_sample_entropy,
+    samples = []
+    for _ in range(num_games):
+        samples.extend(
+            generate_game(
+                _ENGINE,
+                max_moves,
+                depth_range,
+                drive_depth,
+                sample_moves,
+                drive_multipv,
+                sample_multipv,
+                endgame_weight_scale,
+                policy_temperature,
+                drive_temperature,
+                node_cap,
+                min_sample_ply,
+                max_sample_win_prob,
+                min_sample_entropy,
+            )
         )
-    ]
+        if _GAME_COUNTER is not None:
+            with _GAME_COUNTER.get_lock():
+                _GAME_COUNTER.value += 1
+    return samples
 
 
 def generate_pretrain_data(config):
-    total_games, games_per_task, max_workers = (
-        config.pretrain_games,
-        config.pretrain_games_per_task,
-        config.max_workers,
-    )
-    task_game_counts = [games_per_task] * (total_games // games_per_task)
-    if total_games % games_per_task:
-        task_game_counts.append(total_games % games_per_task)
+    total_games, max_workers = config.pretrain_games, config.max_workers
+
+    task_game_counts = [total_games // max_workers] * max_workers
+    for i in range(total_games % max_workers):
+        task_game_counts[i] += 1
+    task_game_counts = [count for count in task_game_counts if count > 0]
 
     ctx = mp.get_context("spawn")
     cpu_counter, cpu_lock = ctx.Value("i", 0), ctx.Lock()
+    game_counter = ctx.Value("i", 0)
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=max_workers,
@@ -300,9 +307,10 @@ def generate_pretrain_data(config):
             config.pretrain_hash_mb,
             cpu_counter,
             cpu_lock,
+            game_counter,
         ),
     ) as executor:
-        futures = {
+        pending = {
             executor.submit(
                 worker_generate_games,
                 count,
@@ -319,18 +327,27 @@ def generate_pretrain_data(config):
                 config.pretrain_min_sample_ply,
                 config.pretrain_max_sample_win_prob,
                 config.pretrain_min_sample_entropy,
-            ): count
+            )
             for count in task_game_counts
         }
         with tqdm(
             total=total_games, desc="Pretrain data generation", unit="games"
         ) as pbar:
-            for i, f in enumerate(concurrent.futures.as_completed(futures)):
-                try:
-                    samples = f.result()
-                except Exception:
-                    samples = []
-                yield from samples
-                pbar.update(futures[f])
-                if i % max_workers == 0:
-                    gc.collect()
+            completed = 0
+            while pending:
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=0.5,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                pbar.update(game_counter.value - pbar.n)
+                for f in done:
+                    try:
+                        samples = f.result()
+                    except Exception:
+                        samples = []
+                    yield from samples
+                    completed += 1
+                    if completed % max_workers == 0:
+                        gc.collect()
+            pbar.update(game_counter.value - pbar.n)

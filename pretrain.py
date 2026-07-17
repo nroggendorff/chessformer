@@ -30,7 +30,7 @@ def run_pretraining(
     eval_interval = max(1, total_steps // config.elo_eval_count)
     pbar = tqdm(range(total_steps), desc="Pretraining Optimization")
     for step in pbar:
-        batch = replay.sample(config.pretrain_batch_size, mix_ratio=1.0)
+        batch = replay.sample_pretrain(config.pretrain_batch_size)
         loss, policy_loss, value_loss, kl_div, top1_acc = train_batch(
             train_model,
             opt,

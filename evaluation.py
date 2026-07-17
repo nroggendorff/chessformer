@@ -1,11 +1,17 @@
+import atexit
+import concurrent.futures
 import math
+import multiprocessing as mp
 
 import chess
 import chess.engine
 
+from data_generation import pin_to_next_cpu
 from policy import batched_policy_step
 
 ELO_EVAL_ANCHOR_SPREAD = (-200, 0, 200)
+
+_EVAL_ENGINE = None
 
 
 def clamp_uci_elo(engine, elo):
@@ -85,24 +91,128 @@ def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
     return {"score": score, "plies": plies, "timed_out": timed_out}
 
 
-def play_anchor_games(
-    engine_path, model, device, anchor, num_games, max_moves, movetime
-):
-    with chess.engine.SimpleEngine.popen_uci(engine_path) as engine:
-        elo = clamp_uci_elo(engine, anchor)
-        engine.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
-        score = sum(
-            play_eval_game(
-                engine,
-                model,
-                device,
-                i % 2 == 0,
-                max_moves,
-                chess.engine.Limit(time=movetime),
-            )["score"]
-            for i in range(num_games)
+def _eval_worker_shutdown():
+    if _EVAL_ENGINE is not None:
+        try:
+            _EVAL_ENGINE.quit()
+        except Exception:
+            pass
+
+
+def eval_worker_init(engine_path, elo, cpu_counter, cpu_lock):
+    global _EVAL_ENGINE
+    pin_to_next_cpu(cpu_counter, cpu_lock)
+    _EVAL_ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
+    _EVAL_ENGINE.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
+    atexit.register(_eval_worker_shutdown)
+
+
+def eval_worker_play_move(fen, movetime):
+    return _EVAL_ENGINE.play(
+        chess.Board(fen), chess.engine.Limit(time=movetime)
+    ).move.uci()
+
+
+def eval_worker_timeout_score(fen, mover_is_white, depth=10):
+    cp = (
+        _EVAL_ENGINE.analyse(chess.Board(fen), chess.engine.Limit(depth=depth))["score"]
+        .pov(chess.WHITE if mover_is_white else chess.BLACK)
+        .score(mate_score=10000)
+    )
+    return 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
+
+
+def play_anchor_games_parallel(executor, model, device, num_games, max_moves, movetime):
+    boards = [chess.Board() for _ in range(num_games)]
+    model_is_white = [i % 2 == 0 for i in range(num_games)]
+    finished = [False] * num_games
+    plies = [0] * num_games
+
+    for _ in range(max_moves):
+        active = [i for i in range(num_games) if not finished[i]]
+        if not active:
+            break
+
+        learner_idx = [
+            i
+            for i in active
+            if boards[i].turn == (chess.WHITE if model_is_white[i] else chess.BLACK)
+        ]
+        engine_idx = [i for i in active if i not in learner_idx]
+
+        if learner_idx:
+            moves, _, _, _ = batched_policy_step(
+                [boards[i] for i in learner_idx], model, device, temperature=0.0
+            )
+            assert len(moves) == len(learner_idx)
+            for i, move in zip(learner_idx, moves):
+                boards[i].push(move)
+                plies[i] += 1
+                if boards[i].is_game_over(claim_draw=True):
+                    finished[i] = True
+
+        if engine_idx:
+            futures = {
+                i: executor.submit(eval_worker_play_move, boards[i].fen(), movetime)
+                for i in engine_idx
+            }
+            for i, future in futures.items():
+                boards[i].push_uci(future.result())
+                plies[i] += 1
+                if boards[i].is_game_over(claim_draw=True):
+                    finished[i] = True
+
+    outcomes = [board.outcome(claim_draw=True) for board in boards]
+    timeout_futures = {
+        i: executor.submit(
+            eval_worker_timeout_score, boards[i].fen(), model_is_white[i]
         )
-    return {"score": score, "games": num_games, "level": {"elo": elo}}
+        for i, outcome in enumerate(outcomes)
+        if outcome is None
+    }
+
+    results = []
+    for i, outcome in enumerate(outcomes):
+        mover = chess.WHITE if model_is_white[i] else chess.BLACK
+        if outcome is None:
+            results.append(
+                {
+                    "score": timeout_futures[i].result(),
+                    "plies": plies[i],
+                    "timed_out": True,
+                }
+            )
+        else:
+            score = 0.5 if outcome.winner is None else float(outcome.winner == mover)
+            results.append({"score": score, "plies": plies[i], "timed_out": False})
+    return results
+
+
+def play_anchor_games(
+    engine_path, model, device, anchor, num_games, max_moves, movetime, max_workers
+):
+    with chess.engine.SimpleEngine.popen_uci(engine_path) as probe_engine:
+        elo = clamp_uci_elo(probe_engine, anchor)
+
+    ctx = mp.get_context("spawn")
+    cpu_counter, cpu_lock = ctx.Value("i", 0), ctx.Lock()
+
+    model.eval()
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=min(max_workers, num_games),
+        mp_context=ctx,
+        initializer=eval_worker_init,
+        initargs=(engine_path, elo, cpu_counter, cpu_lock),
+    ) as executor:
+        results = play_anchor_games_parallel(
+            executor, model, device, num_games, max_moves, movetime
+        )
+
+    return {
+        "score": sum(r["score"] for r in results),
+        "games": num_games,
+        "level": {"elo": elo},
+    }
 
 
 def estimate_elo(model, device, config, state):
@@ -119,6 +229,7 @@ def estimate_elo(model, device, config, state):
             games_per_anchor,
             config.elo_eval_max_moves,
             config.elo_eval_movetime,
+            config.max_workers,
         )
         for anchor in anchors
     ]
