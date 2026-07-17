@@ -54,18 +54,8 @@ class DualRingBuffer:
     def reset_rl(self):
         self.rl_buf.reset()
 
-    def sample(self, batch_size, mix_ratio=0.5):
-        if mix_ratio <= 0.0:
-            return self.rl_buf.sample_items(batch_size)
-        if not len(self.rl_buf):
-            return self.pretrain_buf.sample_items(batch_size)
-        if not len(self.pretrain_buf):
-            return self.rl_buf.sample_items(batch_size)
+    def sample_pretrain(self, batch_size):
+        return self.pretrain_buf.sample_items(batch_size)
 
-        p_size = min(int(batch_size * mix_ratio), len(self.pretrain_buf))
-        r_size = min(batch_size - p_size, len(self.rl_buf))
-        batch = self.pretrain_buf.sample_items(p_size) + self.rl_buf.sample_items(
-            r_size
-        )
-        random.shuffle(batch)
-        return batch
+    def sample_rl(self, batch_size):
+        return self.rl_buf.sample_items(batch_size)

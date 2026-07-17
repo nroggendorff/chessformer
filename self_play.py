@@ -526,10 +526,7 @@ def run_self_play(
             if len(replay.rl_buf) > 0:
                 losses = []
                 for _ in range(config.self_play_gradient_steps):
-                    batch = replay.sample(
-                        config.self_play_batch_size,
-                        mix_ratio=config.self_play_mix_ratio,
-                    )
+                    batch = replay.sample_rl(config.self_play_batch_size)
                     if batch:
                         losses.append(
                             train_batch(

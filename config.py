@@ -47,17 +47,16 @@ class Config:
         default_factory=lambda: shutil.which("stockfish") or "/usr/games/stockfish"
     )
 
-    pretrain_games: int = 25000
-    pretrain_games_per_task: int = 2
+    pretrain_games: int = 125000
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 30
     pretrain_traj_depth: int = 4
-    pretrain_depth: int = 16
+    pretrain_depth: int = 12
     pretrain_sample_multipv: int = 8
-    pretrain_node_cap: int | None = 4000000
-    pretrain_epochs: int = 4
+    pretrain_node_cap: int | None = 1000000
+    pretrain_epochs: int = 2
     pretrain_batch_size: int = 128
-    pretrain_hash_mb: int = 128
+    pretrain_hash_mb: int = 512
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
     pretrain_endgame_weight: float = 2.0
@@ -75,7 +74,6 @@ class Config:
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 16
-    self_play_mix_ratio: float = 0.5
     self_play_adv_clip: float = 2.0
     self_play_draw_value: float = -0.15
     self_play_quick_win_bonus: float = 0.35
@@ -91,7 +89,7 @@ class Config:
     self_play_pool_update_interval: int = 25
     self_play_ref_sync_interval: int = 50
 
-    elo_eval_count: int = 4
+    elo_eval_count: int = 2
     elo_eval_games: int = 90
     elo_eval_anchor: int = 1320
     elo_eval_max_moves: int = 120

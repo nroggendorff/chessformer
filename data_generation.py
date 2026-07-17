@@ -279,14 +279,12 @@ def worker_generate_games(
 
 
 def generate_pretrain_data(config):
-    total_games, games_per_task, max_workers = (
-        config.pretrain_games,
-        config.pretrain_games_per_task,
-        config.max_workers,
-    )
-    task_game_counts = [games_per_task] * (total_games // games_per_task)
-    if total_games % games_per_task:
-        task_game_counts.append(total_games % games_per_task)
+    total_games, max_workers = config.pretrain_games, config.max_workers
+
+    task_game_counts = [total_games // max_workers] * max_workers
+    for i in range(total_games % max_workers):
+        task_game_counts[i] += 1
+    task_game_counts = [count for count in task_game_counts if count > 0]
 
     ctx = mp.get_context("spawn")
     cpu_counter, cpu_lock = ctx.Value("i", 0), ctx.Lock()
