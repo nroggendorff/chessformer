@@ -90,6 +90,7 @@ class Config:
     self_play_pool_self_prob: float = 0.2
     self_play_pool_update_interval: int = 25
     self_play_ref_sync_interval: int = 50
+    self_play_policy_candidates: int | None = 8
 
     elo_eval_count: int = 2
     elo_eval_games: int = 90
@@ -115,7 +116,7 @@ class Config:
     vae_loss_weight: float = 0.1
 
     diffuser_enabled: bool = True
-    diffuser_fusion_enabled: bool = True
+    diffuser_fusion_enabled: bool = False
     diffuser_hidden: int = 256
     diffuser_depth: int = 4
     diffuser_lr: float = 3e-4

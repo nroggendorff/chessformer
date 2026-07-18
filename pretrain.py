@@ -50,17 +50,22 @@ def run_pretraining(
 
         diffuser_postfix = {}
         if diffuser is not None:
-            diffuser_loss = diffuser_train_step(
+            diffuser_loss, target_vae_loss = diffuser_train_step(
                 vae,
                 diffuser,
                 diffuser_scheduler,
                 diffuser_opt,
+                vae_opt,
                 [s[0] for s in batch],
                 [s[2] for s in batch],
                 [s[3] for s in batch],
                 device,
+                vae_kl_weight=config.vae_kl_weight,
             )
-            diffuser_postfix = {"diffuser": f"{diffuser_loss:.3f}"}
+            diffuser_postfix = {
+                "diffuser": f"{diffuser_loss:.3f}",
+                "target_vae": f"{target_vae_loss:.3f}",
+            }
 
         if (step + 1) % eval_interval == 0:
             estimate_elo(model, device, config, elo_state)

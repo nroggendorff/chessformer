@@ -102,20 +102,34 @@ def diffuser_train_step(
     diffuser,
     scheduler,
     opt,
+    vae_opt,
     board_inputs,
     policy_pairs_list,
     policy_probs_list,
     device,
+    vae_kl_weight=1e-6,
 ):
     with torch.no_grad():
         cond_latent = vae.encode(
             board_images(board_inputs).to(device)
         ).latent_dist.mode()
-        target_latent = vae.encode(
-            desirability_targets(board_inputs, policy_pairs_list, policy_probs_list).to(
-                device
-            )
-        ).latent_dist.mode()
+
+    vae.train()
+    target_images = desirability_targets(
+        board_inputs, policy_pairs_list, policy_probs_list
+    ).to(device)
+    posterior = vae.encode(target_images).latent_dist
+    target_latent = posterior.sample()
+    target_recon_loss = (
+        F.mse_loss(vae.decode(target_latent).sample, target_images)
+        + vae_kl_weight * posterior.kl().mean()
+    )
+
+    vae_opt.zero_grad(set_to_none=True)
+    target_recon_loss.backward()
+    nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
+    vae_opt.step()
+    target_latent = target_latent.detach()
 
     diffuser.train()
     noise = torch.randn_like(target_latent)
@@ -132,4 +146,4 @@ def diffuser_train_step(
     loss.backward()
     nn.utils.clip_grad_norm_(diffuser.parameters(), 1.0)
     opt.step()
-    return loss.item()
+    return loss.item(), target_recon_loss.item()

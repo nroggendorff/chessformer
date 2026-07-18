@@ -104,6 +104,7 @@ def play_games_batched(
     decisive_weight=1.5,
     return_clip=1.0,
     opponent_model=None,
+    policy_candidates=None,
 ):
     model.eval()
     if opponent_model is not None:
@@ -133,6 +134,7 @@ def play_games_batched(
                 model,
                 device,
                 temperature=temperature if ply < sample_moves else temperature_floor,
+                max_candidates=policy_candidates,
             )
             for idx, original_i in enumerate(learner_idx):
                 board, move, value, log_prob = (
@@ -175,6 +177,7 @@ def play_games_batched(
                 opponent_model,
                 device,
                 temperature=temperature_floor,
+                max_candidates=policy_candidates,
             )
             for idx, original_i in enumerate(opponent_idx):
                 board = boards[original_i]
@@ -243,6 +246,7 @@ def worker_play_games(
     return_clip,
     device_type,
     opponent_state_dict=None,
+    policy_candidates=None,
 ):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     assert _GLOBAL_MODEL
@@ -273,6 +277,7 @@ def worker_play_games(
         decisive_weight=decisive_weight,
         return_clip=return_clip,
         opponent_model=opponent,
+        policy_candidates=policy_candidates,
     )
 
 
@@ -306,6 +311,7 @@ def generate_self_play_data(
                 decisive_weight=config.self_play_decisive_weight,
                 return_clip=config.self_play_return_clip,
                 opponent_model=opponent_model,
+                policy_candidates=config.self_play_policy_candidates,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -333,6 +339,7 @@ def generate_self_play_data(
                 config.self_play_return_clip,
                 device.type,
                 opponent_state_dict,
+                config.self_play_policy_candidates,
             )
             for i, count in enumerate(counts)
         ]

@@ -12,9 +12,23 @@ def _piece_move_options(board):
     return by_from, move_map
 
 
+def _select_destination(masked_logits, temperature):
+    if temperature <= 0:
+        return int(masked_logits.argmax().item())
+    return int(
+        torch.multinomial(torch.softmax(masked_logits / temperature, dim=-1), 1).item()
+    )
+
+
 @torch.inference_mode()
 def batched_policy_step(
-    boards, model, device, temperature=0.0, use_diffuser=None, diffuser_steps=None
+    boards,
+    model,
+    device,
+    temperature=0.0,
+    use_diffuser=None,
+    diffuser_steps=None,
+    max_candidates=None,
 ):
     board_inputs = torch.tensor(
         [board_to_input(board) for board in boards], dtype=torch.long, device=device
@@ -29,6 +43,7 @@ def batched_policy_step(
     child_inputs = []
     for b, board in enumerate(boards):
         by_from, move_map = _piece_move_options(board)
+        candidates = []
         for slot in range(MAX_PIECES):
             if not piece_mask[b, slot]:
                 continue
@@ -38,10 +53,22 @@ def batched_policy_step(
                 continue
             dest_mask = torch.full((BOARD_SQUARES,), False, device=device)
             dest_mask[dests] = True
-            best_to = int(
-                heatmap[b, slot].masked_fill(~dest_mask, -1e4).argmax().item()
+            masked_logits = heatmap[b, slot].masked_fill(~dest_mask, -1e4)
+            best_to = _select_destination(masked_logits, temperature)
+            candidates.append(
+                (
+                    slot,
+                    best_to,
+                    move_map[(frm, best_to)],
+                    dest_mask,
+                    masked_logits[best_to],
+                )
             )
-            move = move_map[(frm, best_to)]
+        if max_candidates is not None and len(candidates) > max_candidates:
+            candidates = sorted(candidates, key=lambda c: c[4], reverse=True)[
+                :max_candidates
+            ]
+        for slot, best_to, move, dest_mask, _ in candidates:
             child = board.copy()
             child.push(move)
             per_board_candidates[b].append((slot, best_to, move, dest_mask))
