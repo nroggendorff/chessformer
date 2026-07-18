@@ -116,8 +116,6 @@ class Config:
 
     diffuser_enabled: bool = True
     diffuser_fusion_enabled: bool = True
-    diffuser_offset_scale: float = 1.0
-    diffuser_warmup_frac: float = 0.3
     diffuser_hidden: int = 256
     diffuser_depth: int = 4
     diffuser_lr: float = 3e-4
@@ -146,7 +144,6 @@ def build_model(config, device, checkpoint_path=None):
         diffuser_train_timesteps=config.diffuser_train_timesteps,
         diffuser_inference_steps=config.diffuser_inference_steps,
         diffuser_fusion_enabled=config.diffuser_fusion_enabled,
-        diffuser_offset_scale=config.diffuser_offset_scale,
     ).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(load_file(checkpoint_path, device="cpu"))

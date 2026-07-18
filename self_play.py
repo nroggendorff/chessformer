@@ -36,7 +36,6 @@ def worker_init(
     diffuser_train_timesteps,
     diffuser_inference_steps,
     diffuser_fusion_enabled,
-    diffuser_offset_scale,
 ):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     torch.set_num_threads(1)
@@ -52,7 +51,6 @@ def worker_init(
             diffuser_train_timesteps=diffuser_train_timesteps,
             diffuser_inference_steps=diffuser_inference_steps,
             diffuser_fusion_enabled=diffuser_fusion_enabled,
-            diffuser_offset_scale=diffuser_offset_scale,
         ).to(torch.device(device_type))
         for _ in range(2)
     )
@@ -359,7 +357,6 @@ def generate_self_play_data(
             config.diffuser_train_timesteps,
             config.diffuser_inference_steps,
             config.diffuser_fusion_enabled,
-            config.diffuser_offset_scale,
         ),
     ) as fresh_executor:
         futures = submit(fresh_executor)
@@ -402,7 +399,6 @@ def run_self_play(
                 config.diffuser_train_timesteps,
                 config.diffuser_inference_steps,
                 config.diffuser_fusion_enabled,
-                config.diffuser_offset_scale,
             ),
         )
         if use_multiprocessing
@@ -431,7 +427,6 @@ def run_self_play(
             diffuser_train_timesteps=config.diffuser_train_timesteps,
             diffuser_inference_steps=config.diffuser_inference_steps,
             diffuser_fusion_enabled=config.diffuser_fusion_enabled,
-            diffuser_offset_scale=config.diffuser_offset_scale,
         ).to(device)
         ref_model.load_state_dict(model.state_dict())
         ref_model.eval()
@@ -449,7 +444,6 @@ def run_self_play(
             diffuser_train_timesteps=config.diffuser_train_timesteps,
             diffuser_inference_steps=config.diffuser_inference_steps,
             diffuser_fusion_enabled=config.diffuser_fusion_enabled,
-            diffuser_offset_scale=config.diffuser_offset_scale,
         ).to(device)
         opponent_model.eval()
         for p in opponent_model.parameters():
@@ -462,16 +456,7 @@ def run_self_play(
         )
         eval_interval = max(1, config.self_play_iterations // config.elo_eval_count)
         bad_evals = 0
-        warmup_iters = max(
-            1, round(config.diffuser_warmup_frac * config.self_play_iterations)
-        )
-        if config.diffuser_fusion_enabled:
-            model.set_diffuser_offset_scale(0.0)
         for it in pbar:
-            if config.diffuser_fusion_enabled:
-                model.set_diffuser_offset_scale(
-                    config.diffuser_offset_scale * min(1.0, (it + 1) / warmup_iters)
-                )
             opponent_state = (
                 None
                 if random.random() < config.self_play_pool_self_prob
@@ -537,8 +522,6 @@ def run_self_play(
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
             )
-            if config.diffuser_fusion_enabled:
-                elo_postfix["fusion"] = f"{model.diffuser_offset_scale.item():.2f}"
 
             if len(replay.rl_buf) > 0:
                 losses = []

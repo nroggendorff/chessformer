@@ -2,7 +2,6 @@ import os
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from safetensors.torch import load_file, save_file
 
 from diffuser import (
@@ -16,24 +15,21 @@ from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN, VOCAB_SIZE
 from piece_attention import PieceAwareEncoder, kv_color_ids, query_type_ids
 
 META_KV_COLOR = 3
+MAX_PIECES = 16
 
 
-def masked_policy_uncertainty(heatmap, legal_mask):
-    masked = heatmap.masked_fill(~legal_mask, -1e4)
-    log_p_from = F.log_softmax(torch.logsumexp(masked, dim=-1), dim=-1)
-    log_p = (log_p_from[:, :, None] + F.log_softmax(masked, dim=-1)).masked_fill(
-        ~legal_mask, -1e4
-    )
-    entropy = -(log_p.exp() * log_p).sum(dim=(-2, -1))
-    max_entropy = torch.log(legal_mask.sum(dim=(-2, -1)).clamp(min=1).float())
-    return (entropy / max_entropy.clamp(min=1e-6)).clamp(0.0, 1.0)
+def piece_gather(board_tokens):
+    own_piece = (board_tokens >= 1) & (board_tokens <= 6)
+    order = torch.argsort(own_piece.long(), dim=-1, descending=True, stable=True)
+    piece_squares = order[:, :MAX_PIECES]
+    piece_mask = torch.gather(own_piece, 1, piece_squares)
+    return piece_squares, piece_mask
 
 
 class ChessNet(nn.Module):
     ranks: torch.Tensor
     files: torch.Tensor
     meta_positions: torch.Tensor
-    diffuser_offset_scale: torch.Tensor
 
     def __init__(
         self,
@@ -47,7 +43,6 @@ class ChessNet(nn.Module):
         diffuser_train_timesteps=100,
         diffuser_inference_steps=8,
         diffuser_fusion_enabled=True,
-        diffuser_offset_scale=1.0,
     ):
         super().__init__()
         self.d_model = d_model
@@ -88,15 +83,9 @@ class ChessNet(nn.Module):
         self.register_buffer(
             "meta_positions", torch.arange(SEQ_LEN - BOARD_SQUARES), persistent=False
         )
-        self.register_buffer(
-            "diffuser_offset_scale", torch.tensor(float(diffuser_offset_scale))
-        )
-
-    def set_diffuser_offset_scale(self, value):
-        self.diffuser_offset_scale.fill_(float(value))
 
     def forward(
-        self, board_input, legal_mask=None, use_diffuser=None, diffuser_steps=None
+        self, board_input, use_diffuser=None, diffuser_steps=None, value_only=False
     ):
         use_diffuser = (
             self.diffuser_fusion_enabled if use_diffuser is None else use_diffuser
@@ -153,19 +142,26 @@ class ChessNet(nn.Module):
             ),
         )
         pooled = encoded.mean(dim=1)
-        heatmap = self.heatmap_mlp(encoded[:, :BOARD_SQUARES])
+        value = self.value_mlp(pooled).squeeze(-1).tanh()
+        if value_only:
+            return None, value
+
+        piece_squares, _ = piece_gather(board_tokens)
+        piece_embeds = torch.gather(
+            encoded[:, :BOARD_SQUARES],
+            1,
+            piece_squares.unsqueeze(-1).expand(-1, -1, self.d_model),
+        )
+        heatmap = self.heatmap_mlp(piece_embeds)
         if use_diffuser:
             with torch.no_grad():
                 offset = self._diffuser_offset(board_tokens, diffuser_steps)
-            scale = (
-                masked_policy_uncertainty(heatmap.detach(), legal_mask)
-                if legal_mask is not None
-                else heatmap.new_ones(B)
+            heatmap = heatmap + torch.gather(
+                offset,
+                1,
+                piece_squares.unsqueeze(-1).expand(-1, -1, BOARD_SQUARES),
             )
-            heatmap = (
-                heatmap + (self.diffuser_offset_scale * scale).view(B, 1, 1) * offset
-            )
-        return heatmap, self.value_mlp(pooled).squeeze(-1).tanh()
+        return heatmap, value
 
     def _diffuser_offset(self, board_tokens, num_inference_steps):
         device = board_tokens.device
@@ -199,7 +195,6 @@ def load_checkpoint(path, device, config):
         diffuser_train_timesteps=config.diffuser_train_timesteps,
         diffuser_inference_steps=config.diffuser_inference_steps,
         diffuser_fusion_enabled=config.diffuser_fusion_enabled,
-        diffuser_offset_scale=config.diffuser_offset_scale,
     ).to(device)
     model.load_state_dict(load_file(path, device="cpu"))
     model.eval()
