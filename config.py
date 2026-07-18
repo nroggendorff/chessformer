@@ -50,7 +50,7 @@ class Config:
     pretrain_games: int = 125000
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 30
-    pretrain_traj_depth: int = 4
+    pretrain_traj_depth: int = 8
     pretrain_depth: int = 16
     pretrain_sample_multipv: int = 12
     pretrain_node_cap: int | None = 1000000
@@ -65,6 +65,8 @@ class Config:
     pretrain_min_sample_ply: int = 10
     pretrain_max_sample_win_prob: float = 0.85
     pretrain_min_sample_entropy: float = 0.3
+    pretrain_sample_stability: int = 3
+    pretrain_sample_score_margin: int = 25
 
     self_play_iterations: int = 400
     self_play_games_per_iter: int = 128
@@ -113,6 +115,9 @@ class Config:
     vae_loss_weight: float = 0.1
 
     diffuser_enabled: bool = True
+    diffuser_fusion_enabled: bool = True
+    diffuser_offset_scale: float = 1.0
+    diffuser_warmup_frac: float = 0.3
     diffuser_hidden: int = 256
     diffuser_depth: int = 4
     diffuser_lr: float = 3e-4
@@ -139,6 +144,9 @@ def build_model(config, device, checkpoint_path=None):
         diffuser_hidden=config.diffuser_hidden,
         diffuser_depth=config.diffuser_depth,
         diffuser_train_timesteps=config.diffuser_train_timesteps,
+        diffuser_inference_steps=config.diffuser_inference_steps,
+        diffuser_fusion_enabled=config.diffuser_fusion_enabled,
+        diffuser_offset_scale=config.diffuser_offset_scale,
     ).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(load_file(checkpoint_path, device="cpu"))

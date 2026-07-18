@@ -8,6 +8,7 @@ import math
 import random
 import signal
 import threading
+import traceback
 
 import chess
 import chess.engine
@@ -101,16 +102,62 @@ def analyse_full_policy(engine, board, depth, multipv=None, nodes=None):
     return infos if isinstance(infos, list) else [infos]
 
 
+def analyse_converged(
+    engine,
+    board,
+    max_depth,
+    multipv,
+    nodes=None,
+    min_depth=8,
+    stability=3,
+    score_margin=25,
+):
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        return None, max_depth
+    multipv = min(multipv, len(legal_moves))
+    by_depth, last_best, last_score, streak = {}, None, None, 0
+    with engine.analysis(
+        board, chess.engine.Limit(depth=max_depth, nodes=nodes), multipv=multipv
+    ) as analysis:
+        for info in analysis:
+            if "pv" not in info or "depth" not in info or "score" not in info:
+                continue
+            depth = info["depth"]
+            by_depth.setdefault(depth, {})[info.get("multipv", 1)] = info
+            if len(by_depth[depth]) < multipv:
+                continue
+            top = by_depth[depth][1]
+            top_move = top["pv"][0]
+            top_score = top["score"].pov(board.turn).score(mate_score=100000)
+            stable = top_move == last_best and (
+                last_score is not None and abs(top_score - last_score) <= score_margin
+            )
+            streak = streak + 1 if stable else 1
+            last_best, last_score = top_move, top_score
+            if depth >= min_depth and streak >= stability:
+                break
+    if not by_depth:
+        return None, max_depth
+    final_depth = max(by_depth)
+    return [
+        by_depth[final_depth][i] for i in sorted(by_depth[final_depth])
+    ], final_depth
+
+
 def win_probability(score, ply):
     return score.wdl(model="sf", ply=ply).expectation()
 
 
-def move_scores(infos, board, temperature):
-    win_probs = {
+def move_win_probs(infos, board):
+    return {
         info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
         for info in infos
         if "pv" in info and len(info["pv"]) > 0
     }
+
+
+def move_scores(win_probs, temperature):
     best = max(win_probs.values(), default=0.0)
     return {move: math.exp((wp - best) / temperature) for move, wp in win_probs.items()}
 
@@ -176,7 +223,7 @@ def _should_sample_position(ply, win_probs, min_sample_ply, max_win_prob, min_en
 def generate_game(
     engine,
     max_moves=60,
-    depth_range=(4, 16),
+    depth_range=(8, 16),
     drive_depth=3,
     sample_moves=None,
     drive_multipv=8,
@@ -188,6 +235,8 @@ def generate_game(
     min_sample_ply=10,
     max_sample_win_prob=0.85,
     min_sample_entropy=0.3,
+    sample_stability=3,
+    sample_score_margin=25,
 ):
     board = chess.Board()
     sample_plies = set(
@@ -198,29 +247,31 @@ def generate_game(
         if board.is_game_over():
             break
         is_sample = ply in sample_plies
-        depth = (
-            round(random.triangular(depth_range[0], depth_range[1], depth_range[1]))
-            if is_sample
-            else drive_depth
-        )
-        infos = analyse_full_policy(
-            engine,
-            board,
-            depth,
-            multipv=sample_multipv if is_sample else drive_multipv,
-            nodes=node_cap,
-        )
+        if is_sample:
+            infos, depth = analyse_converged(
+                engine,
+                board,
+                depth_range[1],
+                sample_multipv,
+                nodes=node_cap,
+                min_depth=depth_range[0],
+                stability=sample_stability,
+                score_margin=sample_score_margin,
+            )
+        else:
+            infos, depth = (
+                analyse_full_policy(
+                    engine, board, drive_depth, multipv=drive_multipv, nodes=node_cap
+                ),
+                drive_depth,
+            )
         if not infos:
             break
 
+        win_probs = move_win_probs(infos, board)
         scores = move_scores(
-            infos, board, policy_temperature if is_sample else drive_temperature
+            win_probs, policy_temperature if is_sample else drive_temperature
         )
-        win_probs = {
-            info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
-            for info in infos
-            if "pv" in info and len(info["pv"]) > 0
-        }
         if is_sample and _should_sample_position(
             board.ply(),
             win_probs,
@@ -230,7 +281,7 @@ def generate_game(
         ):
             samples.append(
                 position_label(
-                    win_probability(infos[0]["score"].pov(board.turn), board.ply()),
+                    win_probs[infos[0]["pv"][0]],
                     scores,
                     board,
                     weight=(depth / depth_range[1]) ** 2
@@ -247,7 +298,7 @@ def generate_game(
 def worker_generate_games(
     num_games,
     max_moves=60,
-    depth_range=(4, 16),
+    depth_range=(8, 16),
     drive_depth=3,
     sample_moves=None,
     drive_multipv=8,
@@ -259,27 +310,36 @@ def worker_generate_games(
     min_sample_ply=10,
     max_sample_win_prob=0.85,
     min_sample_entropy=0.3,
+    sample_stability=3,
+    sample_score_margin=25,
 ):
     samples = []
     for _ in range(num_games):
-        samples.extend(
-            generate_game(
-                _ENGINE,
-                max_moves,
-                depth_range,
-                drive_depth,
-                sample_moves,
-                drive_multipv,
-                sample_multipv,
-                endgame_weight_scale,
-                policy_temperature,
-                drive_temperature,
-                node_cap,
-                min_sample_ply,
-                max_sample_win_prob,
-                min_sample_entropy,
+        try:
+            samples.extend(
+                generate_game(
+                    _ENGINE,
+                    max_moves,
+                    depth_range,
+                    drive_depth,
+                    sample_moves,
+                    drive_multipv,
+                    sample_multipv,
+                    endgame_weight_scale,
+                    policy_temperature,
+                    drive_temperature,
+                    node_cap,
+                    min_sample_ply,
+                    max_sample_win_prob,
+                    min_sample_entropy,
+                    sample_stability,
+                    sample_score_margin,
+                )
             )
-        )
+        except Exception:
+            tqdm.write(
+                f"skipping a game that raised an error:\n{traceback.format_exc()}"
+            )
         if _GAME_COUNTER is not None:
             with _GAME_COUNTER.get_lock():
                 _GAME_COUNTER.value += 1
@@ -327,13 +387,15 @@ def generate_pretrain_data(config):
                 config.pretrain_min_sample_ply,
                 config.pretrain_max_sample_win_prob,
                 config.pretrain_min_sample_entropy,
+                config.pretrain_sample_stability,
+                config.pretrain_sample_score_margin,
             )
             for count in task_game_counts
         }
         with tqdm(
             total=total_games, desc="Pretrain data generation", unit="games"
         ) as pbar:
-            completed = 0
+            completed, failed, yielded = 0, 0, 0
             while pending:
                 done, pending = concurrent.futures.wait(
                     pending,
@@ -345,9 +407,22 @@ def generate_pretrain_data(config):
                     try:
                         samples = f.result()
                     except Exception:
+                        failed += 1
+                        tqdm.write(
+                            f"worker chunk {completed} failed "
+                            f"({failed}/{len(task_game_counts)} chunks so far):\n"
+                            f"{traceback.format_exc()}"
+                        )
                         samples = []
+                    yielded += len(samples)
                     yield from samples
                     completed += 1
                     if completed % max_workers == 0:
                         gc.collect()
             pbar.update(game_counter.value - pbar.n)
+
+    if yielded == 0 and task_game_counts:
+        raise RuntimeError(
+            f"generate_pretrain_data produced no samples: all {failed}/{len(task_game_counts)} "
+            "worker chunks failed. Check stockfish_path and the errors logged above."
+        )

@@ -67,7 +67,10 @@ def train_batch(
         with torch.no_grad():
             ref_log_probs = joint_move_log_probs(
                 ref_model(
-                    boards, use_diffuser=use_diffuser, diffuser_steps=diffuser_steps
+                    boards,
+                    legal_mask=legal_mask,
+                    use_diffuser=use_diffuser,
+                    diffuser_steps=diffuser_steps,
                 )[0],
                 legal_mask,
             ).clamp(min=-20.0)
@@ -75,7 +78,10 @@ def train_batch(
     opt.zero_grad(set_to_none=True)
     with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
         heatmaps, values = model(
-            boards, use_diffuser=use_diffuser, diffuser_steps=diffuser_steps
+            boards,
+            legal_mask=legal_mask,
+            use_diffuser=use_diffuser,
+            diffuser_steps=diffuser_steps,
         )
         log_probs = joint_move_log_probs(heatmaps, legal_mask).clamp(min=-20.0)
         flat_log_probs = log_probs.view(log_probs.size(0), -1)

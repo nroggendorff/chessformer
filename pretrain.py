@@ -27,9 +27,18 @@ def run_pretraining(
     if len(replay.pretrain_buf) < config.pretrain_batch_size:
         return
 
+    fuse_diffuser = diffuser is not None and config.diffuser_fusion_enabled
+    warmup_steps = max(1, round(config.diffuser_warmup_frac * total_steps))
+    if fuse_diffuser:
+        model.set_diffuser_offset_scale(0.0)
+
     eval_interval = max(1, total_steps // config.elo_eval_count)
     pbar = tqdm(range(total_steps), desc="Pretraining Optimization")
     for step in pbar:
+        if fuse_diffuser:
+            model.set_diffuser_offset_scale(
+                config.diffuser_offset_scale * min(1.0, (step + 1) / warmup_steps)
+            )
         batch = replay.sample_pretrain(config.pretrain_batch_size)
         loss, policy_loss, value_loss, kl_div, top1_acc = train_batch(
             train_model,
@@ -41,7 +50,7 @@ def run_pretraining(
             vae_opt=vae_opt,
             vae_kl_weight=config.vae_kl_weight,
             vae_loss_weight=config.vae_loss_weight,
-            use_diffuser=diffuser is not None,
+            use_diffuser=fuse_diffuser,
             diffuser_steps=config.diffuser_inference_steps,
         )
         scheduler.step()
@@ -59,6 +68,8 @@ def run_pretraining(
                 device,
             )
             diffuser_postfix = {"diffuser": f"{diffuser_loss:.3f}"}
+        if fuse_diffuser:
+            diffuser_postfix["fusion"] = f"{model.diffuser_offset_scale.item():.2f}"
 
         if (step + 1) % eval_interval == 0:
             estimate_elo(model, device, config, elo_state)
