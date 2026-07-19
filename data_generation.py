@@ -184,6 +184,8 @@ def endgame_weight(board, scale):
 def position_label(value, scores, board, weight=1.0):
     pair_scores = {}
     for move, score in scores.items():
+        if move.promotion is not None:
+            continue
         key = (
             canonical_square(move.from_square, board),
             canonical_square(move.to_square, board),
@@ -194,7 +196,8 @@ def position_label(value, scores, board, weight=1.0):
     return {
         "board_input": np.array(board_to_input(board), dtype=np.uint8),
         "legal_pairs": np.array(
-            list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
+            list(legal_moves_by_square_pair(board, include_promotions=False).keys()),
+            dtype=np.uint8,
         ).reshape(-1, 2),
         "policy_pairs": np.array(list(pair_scores.keys()), dtype=np.uint8).reshape(
             -1, 2
@@ -270,7 +273,10 @@ def generate_game(
 ):
     board = chess.Board()
     sample_plies = set(
-        random.sample(range(max_moves), min(sample_moves or max_moves, max_moves))
+        random.sample(
+            range(max_moves),
+            min(sample_moves if sample_moves is not None else max_moves, max_moves),
+        )
     )
     samples = []
     for ply in range(max_moves):

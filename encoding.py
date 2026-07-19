@@ -81,9 +81,11 @@ def board_to_input(board):
     )
 
 
-def legal_moves_by_square_pair(board):
+def legal_moves_by_square_pair(board, include_promotions=True):
     moves = {}
     for move in board.legal_moves:
+        if not include_promotions and move.promotion is not None:
+            continue
         key = (
             canonical_square(move.from_square, board),
             canonical_square(move.to_square, board),

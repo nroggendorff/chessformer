@@ -58,14 +58,14 @@ def game_over(board, ply, draw_check_interval=4):
 
 
 def outcome_targets(
-    outcome, turn, plies, max_moves, draw_value, quick_win_bonus, return_clip
+    outcome, turn, total_plies, max_moves, draw_value, quick_win_bonus, return_clip
 ):
     if outcome.winner is None:
         return draw_value, draw_value
     if outcome.winner == turn:
         return 1.0, float(
             np.clip(
-                1.0 + quick_win_bonus * max(0.0, (max_moves - plies) / max_moves),
+                1.0 + quick_win_bonus * max(0.0, (max_moves - total_plies) / max_moves),
                 -return_clip,
                 return_clip + quick_win_bonus,
             )
@@ -176,12 +176,13 @@ def play_games_batched(
         if not trajectory:
             continue
         outcome = board.outcome(claim_draw=True) if is_finished else None
-        for step_index, step in enumerate(trajectory):
+        total_plies = board.ply()
+        for step in trajectory:
             if outcome is not None:
                 value_target, policy_target = outcome_targets(
                     outcome,
                     step["turn"],
-                    len(trajectory) - step_index,
+                    total_plies,
                     max_moves,
                     draw_value,
                     quick_win_bonus,

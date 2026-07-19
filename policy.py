@@ -1,9 +1,51 @@
 import math
 
+import chess
 import torch
 
 from encoding import BOARD_SQUARES, board_to_input, legal_moves_by_square_pair
 from model import MAX_PIECES, piece_gather
+
+PROMOTION_PIECE_TYPES = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT)
+
+
+def _promotion_variants(move):
+    return [
+        chess.Move(move.from_square, move.to_square, promotion=piece_type)
+        for piece_type in PROMOTION_PIECE_TYPES
+    ]
+
+
+def _pushed(board, move):
+    child = board.copy()
+    child.push(move)
+    return child
+
+
+def resolve_promotions(boards, moves, model, device):
+    promo_idx = [b for b, move in enumerate(moves) if move.promotion is not None]
+    if not promo_idx:
+        return moves
+
+    variants_by_idx = {b: _promotion_variants(moves[b]) for b in promo_idx}
+    variant_inputs = [
+        board_to_input(_pushed(boards[b], variant))
+        for b in promo_idx
+        for variant in variants_by_idx[b]
+    ]
+    _, variant_values = model(
+        torch.tensor(variant_inputs, dtype=torch.long, device=device), value_only=True
+    )
+    variant_values = variant_values.cpu()
+
+    offset = 0
+    for b in promo_idx:
+        variants = variants_by_idx[b]
+        best = int((-variant_values[offset : offset + len(variants)]).argmax().item())
+        moves[b] = variants[best]
+        offset += len(variants)
+
+    return moves
 
 
 def _piece_move_options(board):
@@ -144,5 +186,7 @@ def batched_policy_step(
             masked_logits / temperature if temperature > 0 else masked_logits
         )
         log_probs.append(torch.log_softmax(tempered_logits, dim=-1)[best_to].item())
+
+    moves = resolve_promotions(boards, moves, model, device)
 
     return moves, values, piece_mask, log_probs
