@@ -2,7 +2,6 @@ import os
 
 from tqdm import tqdm
 
-from diffuser import diffuser_train_step
 from evaluation import estimate_elo
 from training import train_batch
 
@@ -18,54 +17,18 @@ def run_pretraining(
     config,
     elo_state,
     total_steps,
-    vae=None,
-    vae_opt=None,
-    diffuser=None,
-    diffuser_opt=None,
-    diffuser_scheduler=None,
 ):
     if len(replay.pretrain_buf) < config.pretrain_batch_size:
         return
-
-    fuse_diffuser = diffuser is not None and config.diffuser_fusion_enabled
 
     eval_interval = max(1, total_steps // config.elo_eval_count)
     pbar = tqdm(range(total_steps), desc="Pretraining Optimization")
     for step in pbar:
         batch = replay.sample_pretrain(config.pretrain_batch_size)
         loss, policy_loss, value_loss, kl_div, top1_acc = train_batch(
-            train_model,
-            opt,
-            scaler,
-            batch,
-            device,
-            vae=vae,
-            vae_opt=vae_opt,
-            vae_kl_weight=config.vae_kl_weight,
-            vae_loss_weight=config.vae_loss_weight,
-            use_diffuser=fuse_diffuser,
-            diffuser_steps=config.diffuser_inference_steps,
+            train_model, opt, scaler, batch, device
         )
         scheduler.step()
-
-        diffuser_postfix = {}
-        if diffuser is not None:
-            diffuser_loss, target_vae_loss = diffuser_train_step(
-                vae,
-                diffuser,
-                diffuser_scheduler,
-                diffuser_opt,
-                vae_opt,
-                [s[0] for s in batch],
-                [s[2] for s in batch],
-                [s[3] for s in batch],
-                device,
-                vae_kl_weight=config.vae_kl_weight,
-            )
-            diffuser_postfix = {
-                "diffuser": f"{diffuser_loss:.3f}",
-                "target_vae": f"{target_vae_loss:.3f}",
-            }
 
         if (step + 1) % eval_interval == 0:
             estimate_elo(model, device, config, elo_state)
@@ -81,15 +44,12 @@ def run_pretraining(
                 "value": f"{value_loss:.3f}",
                 "kl": f"{kl_div:.3f}",
                 "top1": f"{top1_acc:.1%}",
-                **diffuser_postfix,
                 **elo_postfix,
             }
         )
 
 
 if __name__ == "__main__":
-    import torch
-
     from config import (
         Config,
         build_model,
@@ -141,13 +101,6 @@ if __name__ == "__main__":
             "degrade it. Consider restoring from a backup instead."
         )
 
-    vae_opt = torch.optim.AdamW(model.vae.parameters(), lr=config.vae_lr)
-    diffuser_opt = (
-        torch.optim.AdamW(model.diffuser.parameters(), lr=config.diffuser_lr)
-        if config.diffuser_enabled
-        else None
-    )
-
     run_pretraining(
         model,
         train_model,
@@ -159,11 +112,6 @@ if __name__ == "__main__":
         config,
         {},
         total_steps,
-        vae=model.vae,
-        vae_opt=vae_opt,
-        diffuser=model.diffuser if config.diffuser_enabled else None,
-        diffuser_opt=diffuser_opt,
-        diffuser_scheduler=model.diffuser_scheduler,
     )
     save_checkpoint(model, checkpoint_path)
     save_optimizer_state(opt, scheduler, checkpoint_path)

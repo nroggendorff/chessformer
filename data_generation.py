@@ -149,6 +149,10 @@ def win_probability(score, ply):
     return score.wdl(model="sf", ply=ply).expectation()
 
 
+def score_to_value(pov_score, scale=400.0):
+    return math.tanh(pov_score.score(mate_score=100000) / scale)
+
+
 def move_win_probs(infos, board):
     return {
         info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
@@ -177,7 +181,7 @@ def endgame_weight(board, scale):
     )
 
 
-def position_label(win_prob, scores, board, weight=1.0):
+def position_label(value, scores, board, weight=1.0):
     pair_scores = {}
     for move, score in scores.items():
         key = (
@@ -191,15 +195,41 @@ def position_label(win_prob, scores, board, weight=1.0):
         "board_input": np.array(board_to_input(board), dtype=np.uint8),
         "legal_pairs": np.array(
             list(legal_moves_by_square_pair(board).keys()), dtype=np.uint8
+        ).reshape(-1, 2),
+        "policy_pairs": np.array(list(pair_scores.keys()), dtype=np.uint8).reshape(
+            -1, 2
         ),
-        "policy_pairs": np.array(list(pair_scores.keys()), dtype=np.uint8),
         "policy_probs": np.array(
             [sc / total for sc in pair_scores.values()], dtype=np.float32
         ),
-        "value": 2 * win_prob - 1,
+        "value": value,
         "policy_weight": weight,
         "value_weight": weight,
     }
+
+
+def child_value_rows(board, infos, weight):
+    rows = []
+    for info in infos:
+        if not info.get("pv"):
+            continue
+        move = info["pv"][0]
+        child = board.copy()
+        child.push(move)
+        rows.append(
+            {
+                "board_input": np.array(board_to_input(child), dtype=np.uint8),
+                "legal_pairs": np.array(
+                    list(legal_moves_by_square_pair(child).keys()), dtype=np.uint8
+                ).reshape(-1, 2),
+                "policy_pairs": np.zeros((0, 2), dtype=np.uint8),
+                "policy_probs": np.zeros((0,), dtype=np.float32),
+                "value": -score_to_value(info["score"].pov(board.turn)),
+                "policy_weight": 0.0,
+                "value_weight": weight,
+            }
+        )
+    return rows
 
 
 def _should_sample_position(ply, win_probs, min_sample_ply, max_win_prob, min_entropy):
@@ -279,15 +309,18 @@ def generate_game(
             max_sample_win_prob,
             min_sample_entropy,
         ):
+            weight = (depth / depth_range[1]) ** 2 * endgame_weight(
+                board, endgame_weight_scale
+            )
             samples.append(
                 position_label(
-                    win_probs[infos[0]["pv"][0]],
+                    score_to_value(infos[0]["score"].pov(board.turn)),
                     scores,
                     board,
-                    weight=(depth / depth_range[1]) ** 2
-                    * endgame_weight(board, endgame_weight_scale),
+                    weight=weight,
                 )
             )
+            samples.extend(child_value_rows(board, infos, weight))
         board.push(
             random.choices(list(scores.keys()), weights=list(scores.values()), k=1)[0]
         )

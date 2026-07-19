@@ -24,19 +24,7 @@ _GLOBAL_MODEL = None
 _GLOBAL_OPPONENT = None
 
 
-def worker_init(
-    device_type,
-    d_model,
-    nhead,
-    enc_layers,
-    heatmap_hidden,
-    attn_rank,
-    diffuser_hidden,
-    diffuser_depth,
-    diffuser_train_timesteps,
-    diffuser_inference_steps,
-    diffuser_fusion_enabled,
-):
+def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     torch.set_num_threads(1)
     _GLOBAL_MODEL, _GLOBAL_OPPONENT = (
@@ -46,11 +34,6 @@ def worker_init(
             enc_layers=enc_layers,
             heatmap_hidden=heatmap_hidden,
             attn_rank=attn_rank,
-            diffuser_hidden=diffuser_hidden,
-            diffuser_depth=diffuser_depth,
-            diffuser_train_timesteps=diffuser_train_timesteps,
-            diffuser_inference_steps=diffuser_inference_steps,
-            diffuser_fusion_enabled=diffuser_fusion_enabled,
         ).to(torch.device(device_type))
         for _ in range(2)
     )
@@ -105,6 +88,7 @@ def play_games_batched(
     return_clip=1.0,
     opponent_model=None,
     policy_candidates=None,
+    value_top_fraction=None,
 ):
     model.eval()
     if opponent_model is not None:
@@ -134,6 +118,7 @@ def play_games_batched(
                 model,
                 device,
                 temperature=temperature if ply < sample_moves else temperature_floor,
+                top_fraction=value_top_fraction,
                 max_candidates=policy_candidates,
             )
             for idx, original_i in enumerate(learner_idx):
@@ -177,6 +162,7 @@ def play_games_batched(
                 opponent_model,
                 device,
                 temperature=temperature_floor,
+                top_fraction=value_top_fraction,
                 max_candidates=policy_candidates,
             )
             for idx, original_i in enumerate(opponent_idx):
@@ -247,6 +233,7 @@ def worker_play_games(
     device_type,
     opponent_state_dict=None,
     policy_candidates=None,
+    value_top_fraction=None,
 ):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     assert _GLOBAL_MODEL
@@ -278,6 +265,7 @@ def worker_play_games(
         return_clip=return_clip,
         opponent_model=opponent,
         policy_candidates=policy_candidates,
+        value_top_fraction=value_top_fraction,
     )
 
 
@@ -312,6 +300,7 @@ def generate_self_play_data(
                 return_clip=config.self_play_return_clip,
                 opponent_model=opponent_model,
                 policy_candidates=config.self_play_policy_candidates,
+                value_top_fraction=config.self_play_value_top_fraction,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -340,6 +329,7 @@ def generate_self_play_data(
                 device.type,
                 opponent_state_dict,
                 config.self_play_policy_candidates,
+                config.self_play_value_top_fraction,
             )
             for i, count in enumerate(counts)
         ]
@@ -359,11 +349,6 @@ def generate_self_play_data(
             config.enc_layers,
             config.heatmap_hidden,
             config.attn_type_rank,
-            config.diffuser_hidden,
-            config.diffuser_depth,
-            config.diffuser_train_timesteps,
-            config.diffuser_inference_steps,
-            config.diffuser_fusion_enabled,
         ),
     ) as fresh_executor:
         futures = submit(fresh_executor)
@@ -401,11 +386,6 @@ def run_self_play(
                 config.enc_layers,
                 config.heatmap_hidden,
                 config.attn_type_rank,
-                config.diffuser_hidden,
-                config.diffuser_depth,
-                config.diffuser_train_timesteps,
-                config.diffuser_inference_steps,
-                config.diffuser_fusion_enabled,
             ),
         )
         if use_multiprocessing
@@ -423,38 +403,21 @@ def run_self_play(
         elo_state["best_elo"] = elo_state["elo_ema"]
         elo_state["best_se"] = elo_state.get("last_se")
 
-        ref_model = ChessNet(
-            d_model=config.d_model,
-            nhead=config.nhead,
-            enc_layers=config.enc_layers,
-            heatmap_hidden=config.heatmap_hidden,
-            attn_rank=config.attn_type_rank,
-            diffuser_hidden=config.diffuser_hidden,
-            diffuser_depth=config.diffuser_depth,
-            diffuser_train_timesteps=config.diffuser_train_timesteps,
-            diffuser_inference_steps=config.diffuser_inference_steps,
-            diffuser_fusion_enabled=config.diffuser_fusion_enabled,
-        ).to(device)
+        ref_model, opponent_model = (
+            ChessNet(
+                d_model=config.d_model,
+                nhead=config.nhead,
+                enc_layers=config.enc_layers,
+                heatmap_hidden=config.heatmap_hidden,
+                attn_rank=config.attn_type_rank,
+            ).to(device)
+            for _ in range(2)
+        )
         ref_model.load_state_dict(model.state_dict())
-        ref_model.eval()
-        for p in ref_model.parameters():
-            p.requires_grad_(False)
-
-        opponent_model = ChessNet(
-            d_model=config.d_model,
-            nhead=config.nhead,
-            enc_layers=config.enc_layers,
-            heatmap_hidden=config.heatmap_hidden,
-            attn_rank=config.attn_type_rank,
-            diffuser_hidden=config.diffuser_hidden,
-            diffuser_depth=config.diffuser_depth,
-            diffuser_train_timesteps=config.diffuser_train_timesteps,
-            diffuser_inference_steps=config.diffuser_inference_steps,
-            diffuser_fusion_enabled=config.diffuser_fusion_enabled,
-        ).to(device)
-        opponent_model.eval()
-        for p in opponent_model.parameters():
-            p.requires_grad_(False)
+        for m in (ref_model, opponent_model):
+            m.eval()
+            for p in m.parameters():
+                p.requires_grad_(False)
 
         pool = [elo_state["best_state"]]
 
@@ -545,8 +508,6 @@ def run_self_play(
                                 ref_model=ref_model,
                                 kl_coef=config.self_play_kl_coef,
                                 clip_epsilon=config.self_play_clip_ratio,
-                                use_diffuser=config.diffuser_fusion_enabled,
-                                diffuser_steps=config.diffuser_inference_steps,
                             )
                         )
                     scheduler.step()

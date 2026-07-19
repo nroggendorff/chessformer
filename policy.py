@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 from encoding import BOARD_SQUARES, board_to_input, legal_moves_by_square_pair
@@ -20,22 +22,60 @@ def _select_destination(masked_logits, temperature):
     )
 
 
+def _piece_dest_masks(heatmap_b, piece_squares_b, piece_mask_b, by_from, device):
+    for slot in range(MAX_PIECES):
+        if not piece_mask_b[slot]:
+            continue
+        frm = int(piece_squares_b[slot])
+        dests = by_from.get(frm)
+        if not dests:
+            continue
+        dest_mask = torch.full((BOARD_SQUARES,), False, device=device)
+        dest_mask[dests] = True
+        yield slot, frm, dests, dest_mask, heatmap_b[slot].masked_fill(~dest_mask, -1e4)
+
+
+def _best_per_piece_candidates(
+    heatmap_b, piece_squares_b, piece_mask_b, by_from, move_map, device, temperature
+):
+    candidates = []
+    for slot, frm, _, dest_mask, masked_logits in _piece_dest_masks(
+        heatmap_b, piece_squares_b, piece_mask_b, by_from, device
+    ):
+        best_to = _select_destination(masked_logits, temperature)
+        candidates.append(
+            (slot, best_to, move_map[(frm, best_to)], dest_mask, masked_logits[best_to])
+        )
+    return candidates
+
+
+def _top_fraction_candidates(
+    heatmap_b, piece_squares_b, piece_mask_b, by_from, move_map, device, top_fraction
+):
+    candidates = [
+        (slot, to, move_map[(frm, to)], dest_mask, masked_logits[to])
+        for slot, frm, dests, dest_mask, masked_logits in _piece_dest_masks(
+            heatmap_b, piece_squares_b, piece_mask_b, by_from, device
+        )
+        for to in dests
+    ]
+    keep = max(1, math.ceil(top_fraction * len(candidates)))
+    return sorted(candidates, key=lambda c: c[4], reverse=True)[:keep]
+
+
 @torch.inference_mode()
 def batched_policy_step(
     boards,
     model,
     device,
     temperature=0.0,
-    use_diffuser=None,
-    diffuser_steps=None,
+    top_fraction=None,
     max_candidates=None,
 ):
     board_inputs = torch.tensor(
         [board_to_input(board) for board in boards], dtype=torch.long, device=device
     )
-    heatmap, value = model(
-        board_inputs, use_diffuser=use_diffuser, diffuser_steps=diffuser_steps
-    )
+    heatmap, value = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
     piece_squares, piece_mask = piece_squares.cpu(), piece_mask.cpu()
 
@@ -43,27 +83,27 @@ def batched_policy_step(
     child_inputs = []
     for b, board in enumerate(boards):
         by_from, move_map = _piece_move_options(board)
-        candidates = []
-        for slot in range(MAX_PIECES):
-            if not piece_mask[b, slot]:
-                continue
-            frm = int(piece_squares[b, slot])
-            dests = by_from.get(frm)
-            if not dests:
-                continue
-            dest_mask = torch.full((BOARD_SQUARES,), False, device=device)
-            dest_mask[dests] = True
-            masked_logits = heatmap[b, slot].masked_fill(~dest_mask, -1e4)
-            best_to = _select_destination(masked_logits, temperature)
-            candidates.append(
-                (
-                    slot,
-                    best_to,
-                    move_map[(frm, best_to)],
-                    dest_mask,
-                    masked_logits[best_to],
-                )
+        candidates = (
+            _top_fraction_candidates(
+                heatmap[b],
+                piece_squares[b],
+                piece_mask[b],
+                by_from,
+                move_map,
+                device,
+                top_fraction,
             )
+            if top_fraction is not None
+            else _best_per_piece_candidates(
+                heatmap[b],
+                piece_squares[b],
+                piece_mask[b],
+                by_from,
+                move_map,
+                device,
+                temperature,
+            )
+        )
         if max_candidates is not None and len(candidates) > max_candidates:
             candidates = sorted(candidates, key=lambda c: c[4], reverse=True)[
                 :max_candidates

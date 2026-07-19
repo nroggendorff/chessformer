@@ -4,13 +4,6 @@ import torch
 import torch.nn as nn
 from safetensors.torch import load_file, save_file
 
-from diffuser import (
-    build_noise_scheduler,
-    build_vae,
-    infer_latent_dim,
-    tokens_to_image,
-    DiffuserNet,
-)
 from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN, VOCAB_SIZE
 from piece_attention import PieceAwareEncoder, kv_color_ids, query_type_ids
 
@@ -38,16 +31,9 @@ class ChessNet(nn.Module):
         enc_layers=2,
         heatmap_hidden=128,
         attn_rank=32,
-        diffuser_hidden=256,
-        diffuser_depth=4,
-        diffuser_train_timesteps=100,
-        diffuser_inference_steps=8,
-        diffuser_fusion_enabled=True,
     ):
         super().__init__()
         self.d_model = d_model
-        self.diffuser_inference_steps = diffuser_inference_steps
-        self.diffuser_fusion_enabled = diffuser_fusion_enabled
         self.token_emb = nn.Embedding(VOCAB_SIZE, d_model)
         self.rank_emb, self.file_emb, self.meta_pos_emb = [
             nn.Embedding(n, d_model) for n in (8, 8, SEQ_LEN - BOARD_SQUARES)
@@ -65,11 +51,6 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, 1),
         )
-        self.vae = build_vae()
-        self.diffuser = DiffuserNet(
-            infer_latent_dim(self.vae), diffuser_hidden, diffuser_depth
-        )
-        self.diffuser_scheduler = build_noise_scheduler(diffuser_train_timesteps)
         (
             self.legal_from_emb,
             self.legal_to_emb,
@@ -84,15 +65,7 @@ class ChessNet(nn.Module):
             "meta_positions", torch.arange(SEQ_LEN - BOARD_SQUARES), persistent=False
         )
 
-    def forward(
-        self, board_input, use_diffuser=None, diffuser_steps=None, value_only=False
-    ):
-        use_diffuser = (
-            self.diffuser_fusion_enabled if use_diffuser is None else use_diffuser
-        )
-        diffuser_steps = (
-            self.diffuser_inference_steps if diffuser_steps is None else diffuser_steps
-        )
+    def forward(self, board_input, value_only=False):
         B = board_input.size(0)
         board_tokens, meta_tokens = (
             board_input[:, :BOARD_SQUARES],
@@ -153,34 +126,7 @@ class ChessNet(nn.Module):
             piece_squares.unsqueeze(-1).expand(-1, -1, self.d_model),
         )
         heatmap = self.heatmap_mlp(piece_embeds)
-        if use_diffuser:
-            with torch.no_grad():
-                offset = self._diffuser_offset(board_tokens, diffuser_steps)
-            heatmap = heatmap + torch.gather(
-                offset,
-                1,
-                piece_squares.unsqueeze(-1).expand(-1, -1, BOARD_SQUARES),
-            )
         return heatmap, value
-
-    def _diffuser_offset(self, board_tokens, num_inference_steps):
-        device = board_tokens.device
-        cond_latent = self.vae.encode(tokens_to_image(board_tokens)).latent_dist.mode()
-        latent = torch.randn_like(cond_latent)
-
-        self.diffuser_scheduler.set_timesteps(num_inference_steps, device=device)
-        for t in self.diffuser_scheduler.timesteps:
-            pred_noise = self.diffuser(
-                latent.flatten(1), t.expand(latent.size(0)), cond_latent.flatten(1)
-            ).view_as(latent)
-            latent = self.diffuser_scheduler.step(pred_noise, t, latent).prev_sample
-
-        image = self.vae.decode(latent).sample.reshape(
-            board_tokens.size(0), -1, BOARD_SQUARES
-        )
-        return image[
-            torch.arange(board_tokens.size(0), device=device)[:, None], board_tokens
-        ]
 
 
 def load_checkpoint(path, device, config):
@@ -190,11 +136,6 @@ def load_checkpoint(path, device, config):
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
         attn_rank=config.attn_type_rank,
-        diffuser_hidden=config.diffuser_hidden,
-        diffuser_depth=config.diffuser_depth,
-        diffuser_train_timesteps=config.diffuser_train_timesteps,
-        diffuser_inference_steps=config.diffuser_inference_steps,
-        diffuser_fusion_enabled=config.diffuser_fusion_enabled,
     ).to(device)
     model.load_state_dict(load_file(path, device="cpu"))
     model.eval()
