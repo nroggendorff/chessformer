@@ -48,6 +48,7 @@ class Config:
     )
 
     pretrain_games: int = 125000
+    pretrain_chunk_games: int = 20
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 30
     pretrain_traj_depth: int = 8

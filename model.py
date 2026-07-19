@@ -38,9 +38,8 @@ class ChessNet(nn.Module):
         self.rank_emb, self.file_emb, self.meta_pos_emb = [
             nn.Embedding(n, d_model) for n in (8, 8, SEQ_LEN - BOARD_SQUARES)
         ]
-        self.policy_encoder, self.value_encoder = (
-            PieceAwareEncoder(d_model, nhead, 4 * d_model, enc_layers, attn_rank)
-            for _ in range(2)
+        self.encoder = PieceAwareEncoder(
+            d_model, nhead, 4 * d_model, enc_layers, attn_rank
         )
         self.heatmap_mlp = nn.Sequential(
             nn.Linear(d_model, heatmap_hidden),
@@ -108,18 +107,14 @@ class ChessNet(nn.Module):
             dim=1,
         )
 
-        value = (
-            self.value_mlp(self.value_encoder(seq, query_types, kv_colors).mean(dim=1))
-            .squeeze(-1)
-            .tanh()
-        )
+        encoded = self.encoder(seq, query_types, kv_colors)
+        value = self.value_mlp(encoded.mean(dim=1)).squeeze(-1).tanh()
         if value_only:
             return None, value
 
-        policy_encoded = self.policy_encoder(seq, query_types, kv_colors)
         piece_squares, _ = piece_gather(board_tokens)
         piece_embeds = torch.gather(
-            policy_encoded[:, :BOARD_SQUARES],
+            encoded[:, :BOARD_SQUARES],
             1,
             piece_squares.unsqueeze(-1).expand(-1, -1, self.d_model),
         )

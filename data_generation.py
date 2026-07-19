@@ -382,10 +382,13 @@ def worker_generate_games(
 def generate_pretrain_data(config):
     total_games, max_workers = config.pretrain_games, config.max_workers
 
-    task_game_counts = [total_games // max_workers] * max_workers
-    for i in range(total_games % max_workers):
-        task_game_counts[i] += 1
-    task_game_counts = [count for count in task_game_counts if count > 0]
+    chunk_size = min(config.pretrain_chunk_games, total_games) if total_games else 0
+    task_game_counts = (
+        [chunk_size] * (total_games // chunk_size)
+        + ([total_games % chunk_size] if total_games % chunk_size else [])
+        if chunk_size
+        else []
+    )
 
     ctx = mp.get_context("spawn")
     cpu_counter, cpu_lock = ctx.Value("i", 0), ctx.Lock()
