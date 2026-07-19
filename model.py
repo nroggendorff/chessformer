@@ -38,8 +38,9 @@ class ChessNet(nn.Module):
         self.rank_emb, self.file_emb, self.meta_pos_emb = [
             nn.Embedding(n, d_model) for n in (8, 8, SEQ_LEN - BOARD_SQUARES)
         ]
-        self.encoder = PieceAwareEncoder(
-            d_model, nhead, 4 * d_model, enc_layers, attn_rank
+        self.policy_encoder, self.value_encoder = (
+            PieceAwareEncoder(d_model, nhead, 4 * d_model, enc_layers, attn_rank)
+            for _ in range(2)
         )
         self.heatmap_mlp = nn.Sequential(
             nn.Linear(d_model, heatmap_hidden),
@@ -71,57 +72,54 @@ class ChessNet(nn.Module):
             board_input[:, :BOARD_SQUARES],
             board_input[:, BOARD_SQUARES:SEQ_LEN],
         )
-        encoded = self.encoder(
-            torch.cat(
-                [
-                    self.token_emb(board_tokens)
-                    + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
-                    + self.file_emb(self.files.expand(B, BOARD_SQUARES))
-                    + self.legal_from_emb(
-                        board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES]
-                    )
-                    + self.legal_to_emb(
-                        board_input[
-                            :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
-                        ]
-                    )
-                    + self.last_from_emb(
-                        board_input[
-                            :,
-                            SEQ_LEN + 2 * BOARD_SQUARES : SEQ_LEN + 3 * BOARD_SQUARES,
-                        ]
-                    )
-                    + self.last_to_emb(board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]),
-                    self.token_emb(meta_tokens)
-                    + self.meta_pos_emb(
-                        self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
-                    ),
-                ],
-                dim=1,
-            ),
-            torch.cat(
-                [
-                    query_type_ids(board_tokens),
-                    torch.full_like(meta_tokens, NUM_PIECE_TOKENS),
-                ],
-                dim=1,
-            ),
-            torch.cat(
-                [
-                    kv_color_ids(board_tokens),
-                    torch.full_like(meta_tokens, META_KV_COLOR),
-                ],
-                dim=1,
-            ),
+        seq = torch.cat(
+            [
+                self.token_emb(board_tokens)
+                + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
+                + self.file_emb(self.files.expand(B, BOARD_SQUARES))
+                + self.legal_from_emb(board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES])
+                + self.legal_to_emb(
+                    board_input[
+                        :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
+                    ]
+                )
+                + self.last_from_emb(
+                    board_input[
+                        :, SEQ_LEN + 2 * BOARD_SQUARES : SEQ_LEN + 3 * BOARD_SQUARES
+                    ]
+                )
+                + self.last_to_emb(board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]),
+                self.token_emb(meta_tokens)
+                + self.meta_pos_emb(
+                    self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
+                ),
+            ],
+            dim=1,
         )
-        pooled = encoded.mean(dim=1)
-        value = self.value_mlp(pooled).squeeze(-1).tanh()
+        query_types = torch.cat(
+            [
+                query_type_ids(board_tokens),
+                torch.full_like(meta_tokens, NUM_PIECE_TOKENS),
+            ],
+            dim=1,
+        )
+        kv_colors = torch.cat(
+            [kv_color_ids(board_tokens), torch.full_like(meta_tokens, META_KV_COLOR)],
+            dim=1,
+        )
+
+        value = (
+            self.value_mlp(self.value_encoder(seq, query_types, kv_colors).mean(dim=1))
+            .squeeze(-1)
+            .tanh()
+        )
         if value_only:
             return None, value
 
+        policy_encoded = self.policy_encoder(seq, query_types, kv_colors)
         piece_squares, _ = piece_gather(board_tokens)
         piece_embeds = torch.gather(
-            encoded[:, :BOARD_SQUARES],
+            policy_encoded[:, :BOARD_SQUARES],
             1,
             piece_squares.unsqueeze(-1).expand(-1, -1, self.d_model),
         )
