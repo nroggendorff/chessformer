@@ -1,12 +1,14 @@
 import math
 
 import chess
+import numpy as np
 import torch
 
 from encoding import BOARD_SQUARES, board_to_input, legal_moves_by_square_pair
 from model import MAX_PIECES, piece_gather
 
 PROMOTION_PIECE_TYPES = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT)
+MASK_VALUE = -1e4
 
 
 def _promotion_variants(move):
@@ -56,54 +58,82 @@ def _piece_move_options(board):
     return by_from, move_map
 
 
-def _select_destination(masked_logits, temperature):
+def _dest_mask_array(piece_squares, piece_mask, move_options):
+    mask = np.zeros((len(move_options), MAX_PIECES, BOARD_SQUARES), dtype=bool)
+    for b, (by_from, _) in enumerate(move_options):
+        for slot in range(MAX_PIECES):
+            if not piece_mask[b, slot]:
+                continue
+            dests = by_from.get(int(piece_squares[b, slot]))
+            if dests:
+                mask[b, slot, dests] = True
+    return mask
+
+
+def _select_best_per_piece(masked_logits, temperature):
+    B, S, D = masked_logits.shape
     if temperature <= 0:
-        return int(masked_logits.argmax().item())
-    return int(
-        torch.multinomial(torch.softmax(masked_logits / temperature, dim=-1), 1).item()
-    )
+        return masked_logits.argmax(dim=-1)
+    probs = torch.softmax(masked_logits.reshape(B * S, D) / temperature, dim=-1)
+    return torch.multinomial(probs, 1).view(B, S)
 
 
-def _piece_dest_masks(heatmap_b, piece_squares_b, piece_mask_b, by_from, device):
-    for slot in range(MAX_PIECES):
-        if not piece_mask_b[slot]:
-            continue
-        frm = int(piece_squares_b[slot])
-        dests = by_from.get(frm)
-        if not dests:
-            continue
-        dest_mask = torch.full((BOARD_SQUARES,), False, device=device)
-        dest_mask[dests] = True
-        masked_logits = heatmap_b[slot].masked_fill(~dest_mask, -1e4)
-        yield slot, frm, dests, dest_mask, masked_logits, masked_logits.tolist()
-
-
-def _best_per_piece_candidates(
-    heatmap_b, piece_squares_b, piece_mask_b, by_from, move_map, device, temperature
+def _per_piece_candidates(
+    masked_logits, dest_mask, piece_squares, move_options, temperature
 ):
-    candidates = []
-    for slot, frm, _, dest_mask, masked_logits, logits_list in _piece_dest_masks(
-        heatmap_b, piece_squares_b, piece_mask_b, by_from, device
-    ):
-        best_to = _select_destination(masked_logits, temperature)
-        candidates.append(
-            (slot, best_to, move_map[(frm, best_to)], dest_mask, logits_list[best_to])
-        )
-    return candidates
+    has_dest = dest_mask.any(dim=-1).cpu().numpy()
+    best_to = _select_best_per_piece(masked_logits, temperature)
+    selected_logits = (
+        torch.gather(masked_logits, -1, best_to.unsqueeze(-1))
+        .squeeze(-1)
+        .float()
+        .cpu()
+        .numpy()
+    )
+    best_to = best_to.cpu().numpy()
+
+    return [
+        [
+            (
+                slot,
+                int(best_to[b, slot]),
+                move_options[b][1][
+                    (int(piece_squares[b, slot]), int(best_to[b, slot]))
+                ],
+                float(selected_logits[b, slot]),
+            )
+            for slot in range(masked_logits.size(1))
+            if has_dest[b, slot]
+        ]
+        for b in range(masked_logits.size(0))
+    ]
 
 
 def _top_fraction_candidates(
-    heatmap_b, piece_squares_b, piece_mask_b, by_from, move_map, device, top_fraction
+    masked_logits, dest_mask, piece_squares, move_options, top_fraction
 ):
-    candidates = [
-        (slot, to, move_map[(frm, to)], dest_mask, logits_list[to])
-        for slot, frm, dests, dest_mask, _, logits_list in _piece_dest_masks(
-            heatmap_b, piece_squares_b, piece_mask_b, by_from, device
-        )
-        for to in dests
-    ]
-    keep = max(1, math.ceil(top_fraction * len(candidates)))
-    return sorted(candidates, key=lambda c: c[4], reverse=True)[:keep]
+    B, S, D = masked_logits.shape
+    num_valid = dest_mask.reshape(B, S * D).sum(dim=-1).cpu().numpy()
+    sorted_vals, sorted_idx = torch.sort(
+        masked_logits.reshape(B, S * D), dim=-1, descending=True
+    )
+    sorted_vals, sorted_idx = (
+        sorted_vals.float().cpu().numpy(),
+        sorted_idx.cpu().numpy(),
+    )
+
+    candidates = []
+    for b in range(B):
+        keep = max(1, math.ceil(top_fraction * num_valid[b]))
+        board_candidates = []
+        for rank in range(keep):
+            slot, to = divmod(int(sorted_idx[b, rank]), D)
+            frm = int(piece_squares[b, slot])
+            board_candidates.append(
+                (slot, to, move_options[b][1][(frm, to)], float(sorted_vals[b, rank]))
+            )
+        candidates.append(board_candidates)
+    return candidates
 
 
 @torch.inference_mode()
@@ -120,42 +150,38 @@ def batched_policy_step(
     )
     heatmap, value = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
-    piece_squares, piece_mask = piece_squares.cpu(), piece_mask.cpu()
+    piece_squares, piece_mask = piece_squares.cpu().numpy(), piece_mask.cpu().numpy()
 
-    per_board_candidates = [[] for _ in boards]
-    child_inputs = []
-    for b, board in enumerate(boards):
-        by_from, move_map = _piece_move_options(board)
-        candidates = (
-            _top_fraction_candidates(
-                heatmap[b],
-                piece_squares[b],
-                piece_mask[b],
-                by_from,
-                move_map,
-                device,
-                top_fraction,
-            )
-            if top_fraction is not None
-            else _best_per_piece_candidates(
-                heatmap[b],
-                piece_squares[b],
-                piece_mask[b],
-                by_from,
-                move_map,
-                device,
-                temperature,
-            )
+    move_options = [_piece_move_options(board) for board in boards]
+    dest_mask = torch.from_numpy(
+        _dest_mask_array(piece_squares, piece_mask, move_options)
+    ).to(device)
+    masked_logits = heatmap.masked_fill(~dest_mask, MASK_VALUE)
+
+    per_board_candidates_raw = (
+        _top_fraction_candidates(
+            masked_logits, dest_mask, piece_squares, move_options, top_fraction
         )
+        if top_fraction is not None
+        else _per_piece_candidates(
+            masked_logits, dest_mask, piece_squares, move_options, temperature
+        )
+    )
+
+    per_board_candidates, child_inputs = [], []
+    for b, board in enumerate(boards):
+        candidates = per_board_candidates_raw[b]
         if max_candidates is not None and len(candidates) > max_candidates:
-            candidates = sorted(candidates, key=lambda c: c[4], reverse=True)[
+            candidates = sorted(candidates, key=lambda c: c[3], reverse=True)[
                 :max_candidates
             ]
-        for slot, best_to, move, dest_mask, _ in candidates:
+        board_candidates = []
+        for slot, to, move, _ in candidates:
             child = board.copy()
             child.push(move)
-            per_board_candidates[b].append((slot, best_to, move, dest_mask))
+            board_candidates.append((slot, to, move))
             child_inputs.append(board_to_input(child))
+        per_board_candidates.append(board_candidates)
 
     if not child_inputs:
         raise ValueError("batched_policy_step called with no legal moves available")
@@ -165,28 +191,37 @@ def batched_policy_step(
     )
     child_values = child_values.cpu()
 
-    moves, values, log_probs = [], [], []
+    moves, chosen_slots, chosen_tos = [], [], []
     offset = 0
-    for b, candidates in enumerate(per_board_candidates):
+    for candidates in per_board_candidates:
         desirability = -child_values[offset : offset + len(candidates)]
         offset += len(candidates)
-        if temperature <= 0:
-            choice = int(desirability.argmax().item())
-        else:
-            choice = int(
+        choice = (
+            int(desirability.argmax().item())
+            if temperature <= 0
+            else int(
                 torch.multinomial(
                     torch.softmax(desirability / temperature, dim=-1), 1
                 ).item()
             )
-        slot, best_to, move, dest_mask = candidates[choice]
-        moves.append(move)
-        values.append(value[b].item())
-        masked_logits = heatmap[b, slot].masked_fill(~dest_mask, -1e4)
-        tempered_logits = (
-            masked_logits / temperature if temperature > 0 else masked_logits
         )
-        log_probs.append(torch.log_softmax(tempered_logits, dim=-1)[best_to].item())
+        slot, to, move = candidates[choice]
+        moves.append(move)
+        chosen_slots.append(slot)
+        chosen_tos.append(to)
+
+    batch_idx = torch.arange(len(boards), device=device)
+    chosen_logits = masked_logits[batch_idx, torch.tensor(chosen_slots, device=device)]
+    tempered_logits = chosen_logits / temperature if temperature > 0 else chosen_logits
+    log_probs = (
+        torch.log_softmax(tempered_logits, dim=-1)[
+            batch_idx, torch.tensor(chosen_tos, device=device)
+        ]
+        .cpu()
+        .tolist()
+    )
+    values = value.cpu().tolist()
 
     moves = resolve_promotions(boards, moves, model, device)
 
-    return moves, values, piece_mask, log_probs
+    return moves, values, torch.from_numpy(piece_mask), log_probs

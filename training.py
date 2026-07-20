@@ -116,17 +116,23 @@ def train_batch(
         return float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
 
     with torch.no_grad():
+        has_policy = policy_weights > 0
         target_entropy = -(
             target_policy * torch.log(target_policy.clamp(min=1e-12))
         ).sum(dim=-1)
-        kl_div = (
-            ((-per_piece_log_prob.detach() - target_entropy) * active).sum(dim=-1)
-            / active_count
-        ).mean()
+        kl_per_sample = ((-per_piece_log_prob.detach() - target_entropy) * active).sum(
+            dim=-1
+        ) / active_count
         top1_match = (
             target_policy.argmax(dim=-1) == log_probs.detach().argmax(dim=-1)
         ).float()
-        top1_acc = ((top1_match * active).sum(dim=-1) / active_count).mean()
+        top1_per_sample = (top1_match * active).sum(dim=-1) / active_count
+        if has_policy.any():
+            kl_div = kl_per_sample[has_policy].mean()
+            top1_acc = top1_per_sample[has_policy].mean()
+        else:
+            kl_div = kl_per_sample.mean() * 0.0
+            top1_acc = top1_per_sample.mean() * 0.0
 
     if scaler is not None:
         scaler.scale(loss).backward()
