@@ -33,11 +33,12 @@ def physical_cpu_count():
     if not os.path.exists("/proc/cpuinfo"):
         return None
     physical_ids, current_physical = set(), None
-    for line in open("/proc/cpuinfo"):
-        if line.startswith("physical id"):
-            current_physical = line.split(":")[1].strip()
-        elif line.startswith("core id") and current_physical is not None:
-            physical_ids.add((current_physical, line.split(":")[1].strip()))
+    with open("/proc/cpuinfo") as f:
+        for line in f:
+            if line.startswith("physical id"):
+                current_physical = line.split(":")[1].strip()
+            elif line.startswith("core id") and current_physical is not None:
+                physical_ids.add((current_physical, line.split(":")[1].strip()))
     return len(physical_ids) or None
 
 
@@ -72,27 +73,26 @@ class Config:
     self_play_iterations: int = 400
     self_play_games_per_iter: int = 128
     self_play_temperature: float = 1.0
-    self_play_temperature_floor: float = 0.25
+    self_play_temperature_floor: float = 0.1
     self_play_max_moves: int = 150
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 16
-    self_play_adv_clip: float = 2.0
-    self_play_draw_value: float = -0.15
-    self_play_quick_win_bonus: float = 0.35
     self_play_decisive_weight: float = 1.5
-    self_play_return_clip: float = 1.0
     self_play_promote_z: float = 0.5
     self_play_rollback_z: float = 1.5
     self_play_rollback_patience: int = 2
-    self_play_kl_coef: float = 0.05
-    self_play_clip_ratio: float = 0.2
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.2
     self_play_pool_update_interval: int = 25
-    self_play_ref_sync_interval: int = 50
-    self_play_policy_candidates: int | None = 8
-    self_play_value_top_fraction: float = 0.1
+
+    self_play_mcts_simulations: int = 200
+    self_play_opponent_mcts_simulations: int = 100
+    inference_mcts_simulations: int = 400
+    mcts_sims_per_wave: int = 8
+    mcts_c_puct: float = 1.5
+    mcts_dirichlet_alpha: float = 0.3
+    mcts_root_noise_frac: float = 0.25
 
     elo_eval_count: int = 2
     elo_eval_games: int = 90

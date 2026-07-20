@@ -6,19 +6,18 @@ import multiprocessing as mp
 import os
 import random
 import time
-from typing import Any
 
-import chess
 import numpy as np
 import torch
 from tqdm import tqdm
 
+import chess
 from config import amp_dtype
-from encoding import board_to_input, canonical_square, legal_moves_by_square_pair
+from encoding import board_to_input, legal_moves_by_square_pair
 from evaluation import estimate_elo
 from model import ChessNet
-from policy import batched_policy_step
 from training import train_batch
+from tree_search import choose_move, run_mcts, visit_policy_pairs
 
 _GLOBAL_MODEL = None
 _GLOBAL_OPPONENT = None
@@ -57,22 +56,6 @@ def game_over(board, ply, draw_check_interval=4):
     return ply % draw_check_interval == 0 and board.is_game_over(claim_draw=True)
 
 
-def outcome_targets(
-    outcome, turn, total_plies, max_moves, draw_value, quick_win_bonus, return_clip
-):
-    if outcome.winner is None:
-        return draw_value, draw_value
-    if outcome.winner == turn:
-        return 1.0, float(
-            np.clip(
-                1.0 + quick_win_bonus * max(0.0, (max_moves - total_plies) / max_moves),
-                -return_clip,
-                return_clip + quick_win_bonus,
-            )
-        )
-    return -1.0, -1.0
-
-
 def play_games_batched(
     model,
     device,
@@ -80,15 +63,15 @@ def play_games_batched(
     max_moves=120,
     sample_moves=15,
     temperature=1.0,
-    temperature_floor=0.25,
-    adv_clip=2.0,
-    draw_value=-0.15,
-    quick_win_bonus=0.35,
+    temperature_floor=0.1,
     decisive_weight=1.5,
-    return_clip=1.0,
+    mcts_simulations=200,
+    opponent_mcts_simulations=100,
+    sims_per_wave=8,
+    c_puct=1.5,
+    dirichlet_alpha=0.3,
+    root_noise_frac=0.25,
     opponent_model=None,
-    policy_candidates=None,
-    value_top_fraction=None,
 ):
     model.eval()
     if opponent_model is not None:
@@ -97,7 +80,7 @@ def play_games_batched(
     learner_color = [
         chess.WHITE if random.random() < 0.5 else chess.BLACK for _ in range(num_games)
     ]
-    trajectories: list[list[dict[str, Any]]] = [[] for _ in range(num_games)]
+    trajectories: list[list[dict]] = [[] for _ in range(num_games)]
     finished = [False] * num_games
 
     for ply in range(max_moves):
@@ -111,23 +94,27 @@ def play_games_batched(
             if opponent_model is None or boards[i].turn == learner_color[i]
         ]
         opponent_idx = [i for i in active if i not in learner_idx]
+        temperature_now = temperature if ply < sample_moves else temperature_floor
 
         if learner_idx:
-            moves, values, _, log_probs = batched_policy_step(
+            roots = run_mcts(
                 [boards[i] for i in learner_idx],
                 model,
                 device,
-                temperature=temperature if ply < sample_moves else temperature_floor,
-                top_fraction=value_top_fraction,
-                max_candidates=policy_candidates,
+                num_simulations=mcts_simulations,
+                sims_per_wave=sims_per_wave,
+                c_puct=c_puct,
+                add_root_noise=True,
+                root_dirichlet_alpha=dirichlet_alpha,
+                root_noise_frac=root_noise_frac,
             )
-            for idx, original_i in enumerate(learner_idx):
-                board, move, value, log_prob = (
-                    boards[original_i],
-                    moves[idx],
-                    values[idx],
-                    log_probs[idx],
-                )
+            for original_i, root in zip(learner_idx, roots):
+                board = boards[original_i]
+                move = choose_move(root, temperature_now)
+                if move is None:
+                    finished[original_i] = True
+                    continue
+                policy_pairs = visit_policy_pairs(root)
                 trajectories[original_i].append(
                     {
                         "board_input": board_to_input(board),
@@ -135,19 +122,11 @@ def play_games_batched(
                             list(legal_moves_by_square_pair(board).keys()),
                             dtype=np.uint8,
                         ),
-                        "policy_pair": np.array(
-                            [
-                                (
-                                    canonical_square(move.from_square, board),
-                                    canonical_square(move.to_square, board),
-                                )
-                            ],
-                            dtype=np.uint8,
-                        ),
-                        "value_pred": value,
-                        "log_prob": log_prob,
-                        "temperature": (
-                            temperature if ply < sample_moves else temperature_floor
+                        "policy_pairs": np.array(
+                            list(policy_pairs.keys()), dtype=np.uint8
+                        ).reshape(-1, 2),
+                        "policy_probs": np.array(
+                            list(policy_pairs.values()), dtype=np.float32
                         ),
                         "turn": board.turn,
                     }
@@ -157,65 +136,50 @@ def play_games_batched(
                     finished[original_i] = True
 
         if opponent_idx:
-            moves, _, _, _ = batched_policy_step(
+            roots = run_mcts(
                 [boards[i] for i in opponent_idx],
                 opponent_model,
                 device,
-                temperature=temperature_floor,
-                top_fraction=value_top_fraction,
-                max_candidates=policy_candidates,
+                num_simulations=opponent_mcts_simulations,
+                sims_per_wave=sims_per_wave,
+                c_puct=c_puct,
+                add_root_noise=False,
             )
-            for idx, original_i in enumerate(opponent_idx):
+            for original_i, root in zip(opponent_idx, roots):
                 board = boards[original_i]
-                board.push(moves[idx])
+                move = choose_move(root, temperature_floor)
+                if move is None:
+                    finished[original_i] = True
+                    continue
+                board.push(move)
                 if game_over(board, ply):
                     finished[original_i] = True
 
-    raw = []
+    samples = []
     for board, trajectory, is_finished in zip(boards, trajectories, finished):
-        if not trajectory:
+        if not is_finished or not trajectory:
             continue
-        outcome = board.outcome(claim_draw=True) if is_finished else None
-        total_plies = board.ply()
+        outcome = board.outcome(claim_draw=True)
         for step in trajectory:
-            if outcome is not None:
-                value_target, policy_target = outcome_targets(
-                    outcome,
-                    step["turn"],
-                    total_plies,
-                    max_moves,
-                    draw_value,
-                    quick_win_bonus,
-                    return_clip,
+            value_target = (
+                0.0
+                if outcome.winner is None
+                else float(1.0 if outcome.winner == step["turn"] else -1.0)
+            )
+            weight = decisive_weight if outcome.winner is not None else 1.0
+            samples.append(
+                (
+                    np.array(step["board_input"], dtype=np.uint8),
+                    step["legal_pairs"],
+                    step["policy_pairs"],
+                    step["policy_probs"],
+                    value_target,
+                    weight,
+                    weight,
                 )
-            else:
-                value_target = policy_target = draw_value
-            raw.append((step, value_target, policy_target - step["value_pred"]))
+            )
 
-    if not raw:
-        return []
-
-    advantages = np.array([a for _, _, a in raw], dtype=np.float32)
-    normalized = np.clip(
-        (advantages - advantages.mean()) / (advantages.std() + 1e-6),
-        -adv_clip,
-        adv_clip,
-    )
-
-    return [
-        (
-            np.array(step["board_input"], dtype=np.uint8),
-            step["legal_pairs"],
-            step["policy_pair"],
-            np.array([1.0], dtype=np.float32),
-            g,
-            float(w),
-            decisive_weight if abs(g) == 1.0 else 1.0,
-            step["log_prob"],
-            step["temperature"],
-        )
-        for (step, g, _), w in zip(raw, normalized)
-    ]
+    return samples
 
 
 def worker_play_games(
@@ -226,15 +190,15 @@ def worker_play_games(
     sample_moves,
     temperature,
     temperature_floor,
-    adv_clip,
-    draw_value,
-    quick_win_bonus,
     decisive_weight,
-    return_clip,
+    mcts_simulations,
+    opponent_mcts_simulations,
+    sims_per_wave,
+    c_puct,
+    dirichlet_alpha,
+    root_noise_frac,
     device_type,
     opponent_state_dict=None,
-    policy_candidates=None,
-    value_top_fraction=None,
 ):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
     assert _GLOBAL_MODEL
@@ -259,14 +223,14 @@ def worker_play_games(
         sample_moves=sample_moves,
         temperature=temperature,
         temperature_floor=temperature_floor,
-        adv_clip=adv_clip,
-        draw_value=draw_value,
-        quick_win_bonus=quick_win_bonus,
         decisive_weight=decisive_weight,
-        return_clip=return_clip,
+        mcts_simulations=mcts_simulations,
+        opponent_mcts_simulations=opponent_mcts_simulations,
+        sims_per_wave=sims_per_wave,
+        c_puct=c_puct,
+        dirichlet_alpha=dirichlet_alpha,
+        root_noise_frac=root_noise_frac,
         opponent_model=opponent,
-        policy_candidates=policy_candidates,
-        value_top_fraction=value_top_fraction,
     )
 
 
@@ -294,14 +258,14 @@ def generate_self_play_data(
                 sample_moves=sample_moves,
                 temperature=temperature,
                 temperature_floor=temperature_floor,
-                adv_clip=config.self_play_adv_clip,
-                draw_value=config.self_play_draw_value,
-                quick_win_bonus=config.self_play_quick_win_bonus,
                 decisive_weight=config.self_play_decisive_weight,
-                return_clip=config.self_play_return_clip,
+                mcts_simulations=config.self_play_mcts_simulations,
+                opponent_mcts_simulations=config.self_play_opponent_mcts_simulations,
+                sims_per_wave=config.mcts_sims_per_wave,
+                c_puct=config.mcts_c_puct,
+                dirichlet_alpha=config.mcts_dirichlet_alpha,
+                root_noise_frac=config.mcts_root_noise_frac,
                 opponent_model=opponent_model,
-                policy_candidates=config.self_play_policy_candidates,
-                value_top_fraction=config.self_play_value_top_fraction,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -322,15 +286,15 @@ def generate_self_play_data(
                 sample_moves,
                 temperature,
                 temperature_floor,
-                config.self_play_adv_clip,
-                config.self_play_draw_value,
-                config.self_play_quick_win_bonus,
                 config.self_play_decisive_weight,
-                config.self_play_return_clip,
+                config.self_play_mcts_simulations,
+                config.self_play_opponent_mcts_simulations,
+                config.mcts_sims_per_wave,
+                config.mcts_c_puct,
+                config.mcts_dirichlet_alpha,
+                config.mcts_root_noise_frac,
                 device.type,
                 opponent_state_dict,
-                config.self_play_policy_candidates,
-                config.self_play_value_top_fraction,
             )
             for i, count in enumerate(counts)
         ]
@@ -371,7 +335,7 @@ def run_self_play(
         + (
             f"{max_workers} CPU worker processes"
             if use_multiprocessing
-            else "a single batched GPU pass"
+            else "a single batched pass"
         )
     )
 
@@ -404,21 +368,16 @@ def run_self_play(
         elo_state["best_elo"] = elo_state["elo_ema"]
         elo_state["best_se"] = elo_state.get("last_se")
 
-        ref_model, opponent_model = (
-            ChessNet(
-                d_model=config.d_model,
-                nhead=config.nhead,
-                enc_layers=config.enc_layers,
-                heatmap_hidden=config.heatmap_hidden,
-                attn_rank=config.attn_type_rank,
-            ).to(device)
-            for _ in range(2)
-        )
-        ref_model.load_state_dict(model.state_dict())
-        for m in (ref_model, opponent_model):
-            m.eval()
-            for p in m.parameters():
-                p.requires_grad_(False)
+        opponent_model = ChessNet(
+            d_model=config.d_model,
+            nhead=config.nhead,
+            enc_layers=config.enc_layers,
+            heatmap_hidden=config.heatmap_hidden,
+            attn_rank=config.attn_type_rank,
+        ).to(device)
+        opponent_model.eval()
+        for p in opponent_model.parameters():
+            p.requires_grad_(False)
 
         pool = [elo_state["best_state"]]
 
@@ -457,9 +416,6 @@ def run_self_play(
             if (it + 1) % config.self_play_pool_update_interval == 0:
                 add_to_pool(pool, model, config.self_play_pool_size)
 
-            if (it + 1) % config.self_play_ref_sync_interval == 0:
-                ref_model.load_state_dict(model.state_dict())
-
             if (it + 1) % eval_interval == 0:
                 _, elo_ema = estimate_elo(model, device, config, elo_state)
                 z = elo_z_score(
@@ -475,7 +431,6 @@ def run_self_play(
                         k: v.cpu().clone() for k, v in model.state_dict().items()
                     }
                     elo_state["best_scheduler_state"] = scheduler.state_dict()
-                    ref_model.load_state_dict(model.state_dict())
                     add_to_pool(pool, model, config.self_play_pool_size)
                     bad_evals = 0
                 elif z < -config.self_play_rollback_z:
@@ -483,7 +438,6 @@ def run_self_play(
                     if bad_evals >= config.self_play_rollback_patience:
                         model.load_state_dict(elo_state["best_state"])
                         scheduler.load_state_dict(elo_state["best_scheduler_state"])
-                        ref_model.load_state_dict(elo_state["best_state"])
                         opt.state.clear()
                         elo_state["elo_ema"] = elo_state["best_elo"]
                         bad_evals = 0
@@ -500,16 +454,7 @@ def run_self_play(
                     batch = replay.sample_rl(config.self_play_batch_size)
                     if batch:
                         losses.append(
-                            train_batch(
-                                train_model,
-                                opt,
-                                scaler,
-                                batch,
-                                device,
-                                ref_model=ref_model,
-                                kl_coef=config.self_play_kl_coef,
-                                clip_epsilon=config.self_play_clip_ratio,
-                            )
+                            train_batch(train_model, opt, scaler, batch, device)
                         )
                     scheduler.step()
                 if losses:

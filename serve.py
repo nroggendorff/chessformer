@@ -9,7 +9,7 @@ from flask import Flask, jsonify, render_template, request
 
 from config import Config, default_checkpoint_path, get_device
 from model import load_checkpoint
-from policy import batched_policy_step
+from tree_search import mcts_move
 
 app = Flask(__name__, template_folder=os.path.dirname(os.path.abspath(__file__)))
 state = {}
@@ -29,9 +29,8 @@ PIECE_SVGS = {
 }
 
 
-def bot_move(board, model, device):
-    moves, _, _, _ = batched_policy_step([board], model, device, temperature=0.0)
-    return moves[0]
+def bot_move(board, model, device, config):
+    return mcts_move(board, model, device, config)
 
 
 def analyse(board):
@@ -289,7 +288,7 @@ def api_move():
 
     if not board.is_game_over(claim_draw=True):
         bot_reply, score = push_and_log(
-            board, bot_move(board, state["model"], state["device"])
+            board, bot_move(board, state["model"], state["device"], state["config"])
         )
         moves.append(bot_reply)
 
@@ -309,6 +308,7 @@ def main():
     device = get_device()
     state["board"] = chess.Board()
     state["model"] = load_checkpoint(args.checkpoint, device, config)
+    state["config"] = config
     state["device"] = device
     state["eval_depth"] = args.eval_depth
     state["engine"] = chess.engine.SimpleEngine.popen_uci(config.stockfish_path)

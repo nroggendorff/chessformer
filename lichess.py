@@ -6,19 +6,19 @@ import chess
 
 from config import Config, default_checkpoint_path, get_device
 from model import load_checkpoint
-from policy import batched_policy_step
+from tree_search import mcts_move
 
 
-def bot_move(board, model, device):
-    moves, _, _, _ = batched_policy_step([board], model, device, temperature=0.0)
-    return moves[0]
+def bot_move(board, model, device, config):
+    return mcts_move(board, model, device, config)
 
 
 class LichessBot:
-    def __init__(self, token, model, device):
+    def __init__(self, token, model, device, config):
         self.client = berserk.Client(berserk.TokenSession(token))
         self.model = model
         self.device = device
+        self.config = config
         self.my_id = self.client.account.get()["id"]
         self.active_game_id = None
         self.lock = threading.Lock()
@@ -91,7 +91,7 @@ class LichessBot:
             and self.board.turn == self.bot_color
             and not self.board.is_game_over()
         ):
-            move = bot_move(self.board, self.model, self.device)
+            move = bot_move(self.board, self.model, self.device, self.config)
             print(f"playing {move.uci()}", flush=True)
             self.client.bots.make_move(game_id, move.uci())
 
@@ -107,7 +107,7 @@ def main():
     device = get_device()
     model = load_checkpoint(args.checkpoint, device, config)
 
-    LichessBot(args.token, model, device).stream_events()
+    LichessBot(args.token, model, device, config).stream_events()
 
 
 if __name__ == "__main__":

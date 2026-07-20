@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from config import Config, default_checkpoint_path, get_device
 from model import load_checkpoint
-from policy import batched_policy_step
+from tree_search import mcts_move
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,20 +19,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def bot_move(board: chess.Board, model, device) -> chess.Move:
+def bot_move(board: chess.Board, model, device, config) -> chess.Move:
     logger.debug(f"Evaluating position: {board.fen()}")
-    moves, _, _, _ = batched_policy_step([board], model, device, temperature=0.0)
-    selected_move = moves[0]
+    selected_move = mcts_move(board, model, device, config)
     logger.info(f"Model selected move: {selected_move.uci()}")
     return selected_move
 
 
 class LichessBot:
-    def __init__(self, token: str, model, device):
+    def __init__(self, token: str, model, device, config):
         self.session = berserk.TokenSession(token)
         self.client = berserk.Client(self.session)
         self.model = model
         self.device = device
+        self.config = config
 
         try:
             self.my_id = self.client.account.get()["id"]
@@ -175,7 +175,7 @@ class LichessBot:
         if board.turn == bot_color and not board.is_game_over():
             logger.info("It is the bot's turn. Calculating move...")
             try:
-                move = bot_move(board, self.model, self.device)
+                move = bot_move(board, self.model, self.device, self.config)
                 logger.info(f"Submitting move {move.uci()} to Lichess...")
                 self.client.bots.make_move(game_id, move.uci())
             except berserk.exceptions.ResponseError as e:
@@ -219,7 +219,7 @@ def main():
         logger.critical(f"Failed to load model checkpoint at {args.checkpoint}: {e}")
         sys.exit(1)
 
-    bot = LichessBot(args.token, model, device)
+    bot = LichessBot(args.token, model, device, config)
     usernames = (
         args.opponents.split(",") if args.opponents else bot.list_candidate_bots()
     )

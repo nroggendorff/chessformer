@@ -26,16 +26,7 @@ def _piece_targets_and_mask(piece_squares, samples):
     return target, legal, mass[..., 0] > 0
 
 
-def train_batch(
-    model,
-    opt,
-    scaler,
-    samples,
-    device,
-    ref_model=None,
-    kl_coef=0.0,
-    clip_epsilon=0.2,
-):
+def train_batch(model, opt, scaler, samples, device):
     model.train()
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
@@ -56,42 +47,15 @@ def train_batch(
     value_weights = torch.tensor(
         [s[6] for s in samples], dtype=torch.float32, device=device
     )
-    is_rl_sample = torch.tensor([len(s) > 7 for s in samples], device=device)
-    old_log_probs = torch.tensor(
-        [s[7] if len(s) > 7 else 0.0 for s in samples],
-        dtype=torch.float32,
-        device=device,
-    )
-    sample_temperatures = torch.tensor(
-        [s[8] if len(s) > 8 else 1.0 for s in samples],
-        dtype=torch.float32,
-        device=device,
-    )
-
-    ref_log_probs = None
-    if ref_model is not None and kl_coef > 0:
-        with torch.no_grad():
-            ref_heatmap, _ = ref_model(boards)
-            ref_log_probs = F.log_softmax(
-                ref_heatmap.masked_fill(~legal_mask, -1e4), dim=-1
-            ).clamp(min=-20.0)
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
         heatmaps, values = model(boards)
         masked = heatmaps.masked_fill(~legal_mask, -1e4)
         log_probs = F.log_softmax(masked, dim=-1).clamp(min=-20.0)
-        tempered_log_probs = F.log_softmax(
-            log_probs / sample_temperatures[:, None, None], dim=-1
-        )
-        per_piece_log_prob = (target_policy * tempered_log_probs).sum(dim=-1)
+        per_piece_log_prob = (target_policy * log_probs).sum(dim=-1)
         sample_log_probs = (per_piece_log_prob * active).sum(dim=-1) / active_count
-
-        ratio = torch.exp(sample_log_probs - old_log_probs)
-        clipped_ratio = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon)
-        rl_term = -torch.minimum(ratio * policy_weights, clipped_ratio * policy_weights)
-        sft_term = -sample_log_probs * policy_weights
-        policy_loss = torch.where(is_rl_sample, rl_term, sft_term).mean()
+        policy_loss = (-sample_log_probs * policy_weights).mean()
 
         piece_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
         entropy = ((piece_entropy * active).sum(dim=-1) / active_count).mean()
@@ -100,16 +64,6 @@ def train_batch(
             value_weights * F.mse_loss(values, target_values, reduction="none")
         ).mean()
         loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
-        if ref_model is not None and kl_coef > 0:
-            assert ref_log_probs is not None
-            piece_kl = (
-                (log_probs.exp() * (log_probs - ref_log_probs))
-                .masked_fill(~legal_mask, 0.0)
-                .sum(dim=-1)
-            )
-            loss = (
-                loss + kl_coef * ((piece_kl * active).sum(dim=-1) / active_count).mean()
-            )
 
     if not torch.isfinite(loss):
         opt.zero_grad(set_to_none=True)
