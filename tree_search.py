@@ -132,8 +132,8 @@ def _evaluate_boards(boards, model, device):
     heatmap, value = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
     return (
-        heatmap.cpu().numpy(),
-        value.cpu().tolist(),
+        heatmap.float().cpu().numpy(),
+        value.float().cpu().tolist(),
         piece_squares.cpu().numpy(),
         piece_mask.cpu().numpy(),
     )
