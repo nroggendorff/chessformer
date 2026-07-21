@@ -124,7 +124,7 @@ def _select_leaf(root, c_puct):
 
 
 def _backup(path, value):
-    sign = 1.0
+    sign = -1.0
     for node in reversed(path):
         node.virtual_loss -= 1
         node.visit_count += 1
