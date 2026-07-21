@@ -165,16 +165,16 @@ def play_games_batched(
 
     samples = []
     for board, trajectory, is_finished in zip(boards, trajectories, finished):
-        if not is_finished or not trajectory:
+        if not trajectory:
             continue
-        outcome = board.outcome(claim_draw=True)
+        winner = board.outcome(claim_draw=True).winner if is_finished else None
         for step in trajectory:
             value_target = (
                 0.0
-                if outcome.winner is None
-                else float(1.0 if outcome.winner == step["turn"] else -1.0)
+                if winner is None
+                else float(1.0 if winner == step["turn"] else -1.0)
             )
-            weight = decisive_weight if outcome.winner is not None else 1.0
+            weight = decisive_weight if winner is not None else 1.0
             samples.append(
                 (
                     np.array(step["board_input"], dtype=np.uint8),
@@ -396,7 +396,9 @@ def run_self_play(
         pbar = tqdm(
             range(config.self_play_iterations), desc="Self-Play RL Optimization"
         )
-        eval_interval = max(1, config.self_play_iterations // config.elo_eval_count)
+        eval_interval = max(
+            1, config.self_play_iterations // config.self_play_eval_count
+        )
         bad_evals = 0
         for it in pbar:
             opponent_state = (
@@ -407,7 +409,6 @@ def run_self_play(
             if opponent_state is not None and not use_multiprocessing:
                 opponent_model.load_state_dict(opponent_state)
 
-            replay.reset_rl()
             replay.extend_rl(
                 generate_self_play_data(
                     model,

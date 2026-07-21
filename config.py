@@ -97,8 +97,9 @@ class Config:
     self_play_rollback_z: float = 1.5
     self_play_rollback_patience: int = 2
     self_play_pool_size: int = 8
-    self_play_pool_self_prob: float = 0.2
+    self_play_pool_self_prob: float = 0.75
     self_play_pool_update_interval: int = 25
+    self_play_eval_count: int = 8
 
     self_play_mcts_simulations: int = 200
     self_play_opponent_mcts_simulations: int = 100

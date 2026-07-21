@@ -189,16 +189,15 @@ def run_mcts(
         wave = min(effective_wave, remaining)
         remaining -= wave
 
-        paths = [
-            (root, path)
-            for root in live_roots
-            if root.children
-            for _ in range(wave)
-            for path in (_select_leaf(root, c_puct),)
-        ]
-        for _, path in paths:
-            for node in path:
-                node.virtual_loss += 1
+        paths = []
+        for root in live_roots:
+            if not root.children:
+                continue
+            for _ in range(wave):
+                path = _select_leaf(root, c_puct)
+                for node in path:
+                    node.virtual_loss += 1
+                paths.append((root, path))
 
         pending, seen = [], set()
         for _, path in paths:
