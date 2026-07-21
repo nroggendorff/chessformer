@@ -83,6 +83,7 @@ _GAME_COUNTER = None
 
 def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock, game_counter):
     global _ENGINE, _GAME_COUNTER
+    gc.set_threshold(100000, 50, 50)
     pin_to_next_cpu(cpu_counter, cpu_lock)
     _ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
     _ENGINE.configure({"Hash": hash_mb, "Threads": 1})
@@ -90,8 +91,10 @@ def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock, game_counter):
     atexit.register(worker_shutdown)
 
 
-def analyse_full_policy(engine, board, depth, multipv=None, nodes=None):
-    legal_moves = list(board.legal_moves)
+def analyse_full_policy(
+    engine, board, depth, multipv=None, nodes=None, legal_moves=None
+):
+    legal_moves = list(board.legal_moves) if legal_moves is None else legal_moves
     if not legal_moves:
         return None
     infos = engine.analyse(
@@ -111,8 +114,9 @@ def analyse_converged(
     min_depth=8,
     stability=3,
     score_margin=25,
+    legal_moves=None,
 ):
-    legal_moves = list(board.legal_moves)
+    legal_moves = list(board.legal_moves) if legal_moves is None else legal_moves
     if not legal_moves:
         return None, max_depth
     multipv = min(multipv, len(legal_moves))
@@ -181,7 +185,9 @@ def endgame_weight(board, scale):
     )
 
 
-def position_label(value, scores, board, weight=1.0):
+def position_label(value, scores, board, weight=1.0, legal_moves=None):
+    if legal_moves is None:
+        legal_moves = list(board.legal_moves)
     pair_scores = {}
     for move, score in scores.items():
         if move.promotion is not None:
@@ -194,9 +200,15 @@ def position_label(value, scores, board, weight=1.0):
 
     total = sum(pair_scores.values()) or 1.0
     return {
-        "board_input": np.array(board_to_input(board), dtype=np.uint8),
+        "board_input": np.array(
+            board_to_input(board, legal_moves=legal_moves), dtype=np.uint8
+        ),
         "legal_pairs": np.array(
-            list(legal_moves_by_square_pair(board, include_promotions=False).keys()),
+            list(
+                legal_moves_by_square_pair(
+                    board, legal_moves=legal_moves, include_promotions=False
+                ).keys()
+            ),
             dtype=np.uint8,
         ).reshape(-1, 2),
         "policy_pairs": np.array(list(pair_scores.keys()), dtype=np.uint8).reshape(
@@ -219,11 +231,19 @@ def child_value_rows(board, infos, weight):
         move = info["pv"][0]
         child = board.copy()
         child.push(move)
+        child_legal_moves = list(child.legal_moves)
         rows.append(
             {
-                "board_input": np.array(board_to_input(child), dtype=np.uint8),
+                "board_input": np.array(
+                    board_to_input(child, legal_moves=child_legal_moves), dtype=np.uint8
+                ),
                 "legal_pairs": np.array(
-                    list(legal_moves_by_square_pair(child).keys()), dtype=np.uint8
+                    list(
+                        legal_moves_by_square_pair(
+                            child, legal_moves=child_legal_moves
+                        ).keys()
+                    ),
+                    dtype=np.uint8,
                 ).reshape(-1, 2),
                 "policy_pairs": np.zeros((0, 2), dtype=np.uint8),
                 "policy_probs": np.zeros((0,), dtype=np.float32),
@@ -235,22 +255,21 @@ def child_value_rows(board, infos, weight):
     return rows
 
 
-def _should_sample_position(ply, win_probs, min_sample_ply, max_win_prob, min_entropy):
-    if ply < min_sample_ply:
-        return False
-    if not win_probs:
+def _should_sample_position(ply, win_probs, sample_ply_ramp, max_win_prob, min_entropy):
+    if not win_probs or len(win_probs) < 2:
         return False
     best_wp = max(win_probs.values())
     if best_wp > max_win_prob:
-        return False
-    if len(win_probs) < 2:
         return False
     total = sum(win_probs.values())
     if total <= 0:
         return False
     probs = [wp / total for wp in win_probs.values()]
     entropy = -sum(p * math.log(p) for p in probs if p > 1e-10)
-    return entropy >= min_entropy
+    if entropy < min_entropy:
+        return False
+    keep_prob = 1.0 if sample_ply_ramp <= 0 else min(1.0, (ply + 1) / sample_ply_ramp)
+    return random.random() < keep_prob
 
 
 def generate_game(
@@ -265,7 +284,7 @@ def generate_game(
     policy_temperature=0.06,
     drive_temperature=0.3,
     node_cap=None,
-    min_sample_ply=10,
+    sample_ply_ramp=10,
     max_sample_win_prob=0.85,
     min_sample_entropy=0.3,
     sample_stability=3,
@@ -283,6 +302,7 @@ def generate_game(
         if board.is_game_over():
             break
         is_sample = ply in sample_plies
+        legal_moves = list(board.legal_moves)
         if is_sample:
             infos, depth = analyse_converged(
                 engine,
@@ -293,11 +313,17 @@ def generate_game(
                 min_depth=depth_range[0],
                 stability=sample_stability,
                 score_margin=sample_score_margin,
+                legal_moves=legal_moves,
             )
         else:
             infos, depth = (
                 analyse_full_policy(
-                    engine, board, drive_depth, multipv=drive_multipv, nodes=node_cap
+                    engine,
+                    board,
+                    drive_depth,
+                    multipv=drive_multipv,
+                    nodes=node_cap,
+                    legal_moves=legal_moves,
                 ),
                 drive_depth,
             )
@@ -311,7 +337,7 @@ def generate_game(
         if is_sample and _should_sample_position(
             board.ply(),
             win_probs,
-            min_sample_ply,
+            sample_ply_ramp,
             max_sample_win_prob,
             min_sample_entropy,
         ):
@@ -324,6 +350,7 @@ def generate_game(
                     scores,
                     board,
                     weight=weight,
+                    legal_moves=legal_moves,
                 )
             )
             samples.extend(child_value_rows(board, infos, weight))
@@ -346,7 +373,7 @@ def worker_generate_games(
     policy_temperature=0.06,
     drive_temperature=0.3,
     node_cap=None,
-    min_sample_ply=10,
+    sample_ply_ramp=10,
     max_sample_win_prob=0.85,
     min_sample_entropy=0.3,
     sample_stability=3,
@@ -368,7 +395,7 @@ def worker_generate_games(
                     policy_temperature,
                     drive_temperature,
                     node_cap,
-                    min_sample_ply,
+                    sample_ply_ramp,
                     max_sample_win_prob,
                     min_sample_entropy,
                     sample_stability,
@@ -426,7 +453,7 @@ def generate_pretrain_data(config):
                 config.pretrain_policy_temperature,
                 config.pretrain_drive_temperature,
                 config.pretrain_node_cap,
-                config.pretrain_min_sample_ply,
+                config.pretrain_sample_ply_ramp,
                 config.pretrain_max_sample_win_prob,
                 config.pretrain_min_sample_entropy,
                 config.pretrain_sample_stability,

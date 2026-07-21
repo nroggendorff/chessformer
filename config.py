@@ -1,3 +1,4 @@
+import math
 import multiprocessing
 import os
 import shutil
@@ -29,6 +30,19 @@ def default_checkpoint_path():
     )
 
 
+def cgroup_cpu_quota():
+    v2_path = "/sys/fs/cgroup/cpu.max"
+    if os.path.exists(v2_path):
+        quota, period = open(v2_path).read().split()
+        return None if quota == "max" else math.ceil(int(quota) / int(period))
+    quota_path = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
+    period_path = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
+    if os.path.exists(quota_path) and os.path.exists(period_path):
+        quota, period = int(open(quota_path).read()), int(open(period_path).read())
+        return math.ceil(quota / period) if quota > 0 else None
+    return None
+
+
 def physical_cpu_count():
     if not os.path.exists("/proc/cpuinfo"):
         return None
@@ -53,9 +67,9 @@ class Config:
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 30
     pretrain_traj_depth: int = 8
-    pretrain_depth: int = 16
-    pretrain_sample_multipv: int = 12
-    pretrain_node_cap: int | None = 1000000
+    pretrain_depth: int = 12
+    pretrain_sample_multipv: int = 6
+    pretrain_node_cap: int | None = 300000
     pretrain_epochs: int = 2
     pretrain_batch_size: int = 128
     pretrain_hash_mb: int = 512
@@ -64,10 +78,10 @@ class Config:
     pretrain_endgame_weight: float = 2.0
     pretrain_policy_temperature: float = 0.06
     pretrain_drive_temperature: float = 0.3
-    pretrain_min_sample_ply: int = 10
+    pretrain_sample_ply_ramp: int = 10
     pretrain_max_sample_win_prob: float = 0.85
     pretrain_min_sample_entropy: float = 0.3
-    pretrain_sample_stability: int = 3
+    pretrain_sample_stability: int = 2
     pretrain_sample_score_margin: int = 25
 
     self_play_iterations: int = 400
@@ -90,6 +104,7 @@ class Config:
     self_play_opponent_mcts_simulations: int = 100
     inference_mcts_simulations: int = 400
     mcts_sims_per_wave: int = 8
+    mcts_target_batch_size: int = 1024
     mcts_c_puct: float = 1.5
     mcts_dirichlet_alpha: float = 0.3
     mcts_root_noise_frac: float = 0.25
@@ -117,7 +132,10 @@ class Config:
 
     def __post_init__(self):
         if self.max_workers is None:
-            self.max_workers = physical_cpu_count() or multiprocessing.cpu_count()
+            self.max_workers = min(
+                physical_cpu_count() or multiprocessing.cpu_count(),
+                cgroup_cpu_quota() or math.inf,
+            )
 
     def pretrain_steps_for(self, dataset_size):
         return max(1, self.pretrain_epochs * dataset_size // self.pretrain_batch_size)

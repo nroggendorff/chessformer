@@ -61,12 +61,15 @@ def classify_move(cp_before, cp_after):
 
 
 def game_status(board):
-    if board.is_checkmate():
-        return ("Black" if board.turn else "White") + " wins by Checkmate"
-    if board.is_stalemate():
-        return "Stalemate"
-    if board.is_insufficient_material():
-        return "Draw (Insufficient Material)"
+    outcome = board.outcome(claim_draw=False)
+    if outcome is not None:
+        if outcome.termination == chess.Termination.CHECKMATE:
+            return ("Black" if board.turn else "White") + " wins by Checkmate"
+        if outcome.termination == chess.Termination.STALEMATE:
+            return "Stalemate"
+        if outcome.termination == chess.Termination.INSUFFICIENT_MATERIAL:
+            return "Draw (Insufficient Material)"
+        return "Draw"
     if board.can_claim_draw():
         return "Draw Available"
     return ("White" if board.turn == chess.WHITE else "Black") + " to Move"

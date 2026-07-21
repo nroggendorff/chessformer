@@ -17,6 +17,7 @@ class MCTSNode:
     __slots__ = (
         "board",
         "parent",
+        "move",
         "prior",
         "children",
         "visit_count",
@@ -24,11 +25,13 @@ class MCTSNode:
         "virtual_loss",
         "expanded",
         "terminal",
+        "legal_moves",
     )
 
-    def __init__(self, board, parent=None, prior=0.0):
+    def __init__(self, board, parent=None, move=None, prior=0.0):
         self.board = board
         self.parent = parent
+        self.move = move
         self.prior = prior
         self.children = {}
         self.visit_count = 0
@@ -36,6 +39,13 @@ class MCTSNode:
         self.virtual_loss = 0
         self.expanded = False
         self.terminal = False
+        self.legal_moves = None
+
+    def ensure_board(self):
+        if self.board is None:
+            self.board = self.parent.board.copy()
+            self.board.push(self.move)
+        return self.board
 
     def puct_score(self, c_puct, parent_visits):
         n = self.visit_count + self.virtual_loss
@@ -74,7 +84,7 @@ def _softmax(logits):
 
 
 def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
-    move_map = legal_moves_by_square_pair(node.board)
+    move_map = legal_moves_by_square_pair(node.board, legal_moves=node.legal_moves)
     slot_of_square = {
         int(sq): slot
         for slot, sq in enumerate(piece_squares_row)
@@ -92,9 +102,7 @@ def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
         return
 
     for move, prior in zip(moves, _softmax(logits)):
-        child_board = node.board.copy()
-        child_board.push(move)
-        node.children[move] = MCTSNode(child_board, parent=node, prior=float(prior))
+        node.children[move] = MCTSNode(None, parent=node, move=move, prior=float(prior))
     node.expanded = True
 
 
@@ -126,8 +134,11 @@ def _backup(path, value):
 
 @torch.inference_mode()
 def _evaluate_boards(boards, model, device):
+    legal_moves = [list(b.legal_moves) for b in boards]
     board_inputs = torch.tensor(
-        [board_to_input(b) for b in boards], dtype=torch.long, device=device
+        [board_to_input(b, legal_moves=lm) for b, lm in zip(boards, legal_moves)],
+        dtype=torch.long,
+        device=device,
     )
     heatmap, value = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
@@ -136,6 +147,7 @@ def _evaluate_boards(boards, model, device):
         value.float().cpu().tolist(),
         piece_squares.cpu().numpy(),
         piece_mask.cpu().numpy(),
+        legal_moves,
     )
 
 
@@ -149,24 +161,32 @@ def run_mcts(
     add_root_noise=False,
     root_dirichlet_alpha=0.3,
     root_noise_frac=0.25,
+    target_batch_size=None,
 ):
     roots = [MCTSNode(board.copy()) for board in boards]
 
     live_roots = [root for root in roots if terminal_value(root.board) is None]
     if live_roots:
-        heatmaps, _, piece_squares, piece_masks = _evaluate_boards(
+        heatmaps, _, piece_squares, piece_masks, legal_moves = _evaluate_boards(
             [root.board for root in live_roots], model, device
         )
-        for root, hm_row, ps_row, pm_row in zip(
-            live_roots, heatmaps, piece_squares, piece_masks
+        for root, hm_row, ps_row, pm_row, lm in zip(
+            live_roots, heatmaps, piece_squares, piece_masks, legal_moves
         ):
+            root.legal_moves = lm
             expand_node(root, hm_row, ps_row, pm_row)
             if add_root_noise:
                 add_root_dirichlet_noise(root, root_dirichlet_alpha, root_noise_frac)
 
+    effective_wave = (
+        sims_per_wave
+        if not target_batch_size or not live_roots
+        else max(sims_per_wave, target_batch_size // len(live_roots))
+    )
+
     remaining = num_simulations
     while remaining > 0 and live_roots:
-        wave = min(sims_per_wave, remaining)
+        wave = min(effective_wave, remaining)
         remaining -= wave
 
         paths = [
@@ -186,20 +206,21 @@ def run_mcts(
             if id(leaf) in seen or leaf.expanded or leaf.terminal:
                 continue
             seen.add(id(leaf))
-            tv = terminal_value(leaf.board)
+            tv = terminal_value(leaf.ensure_board())
             if tv is not None:
                 leaf.terminal = True
             else:
                 pending.append(leaf)
 
         if pending:
-            heatmaps, values, piece_squares, piece_masks = _evaluate_boards(
-                [leaf.board for leaf in pending], model, device
+            heatmaps, values, piece_squares, piece_masks, legal_moves = (
+                _evaluate_boards([leaf.board for leaf in pending], model, device)
             )
             leaf_values = {}
-            for leaf, hm_row, ps_row, pm_row, v in zip(
-                pending, heatmaps, piece_squares, piece_masks, values
+            for leaf, hm_row, ps_row, pm_row, lm, v in zip(
+                pending, heatmaps, piece_squares, piece_masks, legal_moves, values
             ):
+                leaf.legal_moves = lm
                 expand_node(leaf, hm_row, ps_row, pm_row)
                 leaf_values[id(leaf)] = v
         else:

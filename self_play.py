@@ -25,6 +25,7 @@ _GLOBAL_OPPONENT = None
 
 def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
     global _GLOBAL_MODEL, _GLOBAL_OPPONENT
+    gc.set_threshold(100000, 50, 50)
     torch.set_num_threads(1)
     _GLOBAL_MODEL, _GLOBAL_OPPONENT = (
         ChessNet(
@@ -51,9 +52,7 @@ def elo_z_score(candidate_elo, candidate_se, reference_elo, reference_se):
 
 
 def game_over(board, ply, draw_check_interval=4):
-    if board.is_checkmate() or board.is_stalemate() or board.is_insufficient_material():
-        return True
-    return ply % draw_check_interval == 0 and board.is_game_over(claim_draw=True)
+    return board.outcome(claim_draw=ply % draw_check_interval == 0) is not None
 
 
 def play_games_batched(
@@ -68,6 +67,7 @@ def play_games_batched(
     mcts_simulations=200,
     opponent_mcts_simulations=100,
     sims_per_wave=8,
+    target_batch_size=None,
     c_puct=1.5,
     dirichlet_alpha=0.3,
     root_noise_frac=0.25,
@@ -103,6 +103,7 @@ def play_games_batched(
                 device,
                 num_simulations=mcts_simulations,
                 sims_per_wave=sims_per_wave,
+                target_batch_size=target_batch_size,
                 c_puct=c_puct,
                 add_root_noise=True,
                 root_dirichlet_alpha=dirichlet_alpha,
@@ -117,9 +118,15 @@ def play_games_batched(
                 policy_pairs = visit_policy_pairs(root)
                 trajectories[original_i].append(
                     {
-                        "board_input": board_to_input(board),
+                        "board_input": board_to_input(
+                            board, legal_moves=root.legal_moves
+                        ),
                         "legal_pairs": np.array(
-                            list(legal_moves_by_square_pair(board).keys()),
+                            list(
+                                legal_moves_by_square_pair(
+                                    board, legal_moves=root.legal_moves
+                                ).keys()
+                            ),
                             dtype=np.uint8,
                         ),
                         "policy_pairs": np.array(
@@ -142,6 +149,7 @@ def play_games_batched(
                 device,
                 num_simulations=opponent_mcts_simulations,
                 sims_per_wave=sims_per_wave,
+                target_batch_size=target_batch_size,
                 c_puct=c_puct,
                 add_root_noise=False,
             )
@@ -194,6 +202,7 @@ def worker_play_games(
     mcts_simulations,
     opponent_mcts_simulations,
     sims_per_wave,
+    target_batch_size,
     c_puct,
     dirichlet_alpha,
     root_noise_frac,
@@ -227,6 +236,7 @@ def worker_play_games(
         mcts_simulations=mcts_simulations,
         opponent_mcts_simulations=opponent_mcts_simulations,
         sims_per_wave=sims_per_wave,
+        target_batch_size=target_batch_size,
         c_puct=c_puct,
         dirichlet_alpha=dirichlet_alpha,
         root_noise_frac=root_noise_frac,
@@ -262,6 +272,7 @@ def generate_self_play_data(
                 mcts_simulations=config.self_play_mcts_simulations,
                 opponent_mcts_simulations=config.self_play_opponent_mcts_simulations,
                 sims_per_wave=config.mcts_sims_per_wave,
+                target_batch_size=config.mcts_target_batch_size,
                 c_puct=config.mcts_c_puct,
                 dirichlet_alpha=config.mcts_dirichlet_alpha,
                 root_noise_frac=config.mcts_root_noise_frac,
@@ -290,6 +301,7 @@ def generate_self_play_data(
                 config.self_play_mcts_simulations,
                 config.self_play_opponent_mcts_simulations,
                 config.mcts_sims_per_wave,
+                config.mcts_target_batch_size,
                 config.mcts_c_puct,
                 config.mcts_dirichlet_alpha,
                 config.mcts_root_noise_frac,

@@ -64,9 +64,10 @@ def board_to_tokens(board):
     return tokens
 
 
-def board_to_input(board):
-    legal_froms = {canonical_square(m.from_square, board) for m in board.legal_moves}
-    legal_tos = {canonical_square(m.to_square, board) for m in board.legal_moves}
+def board_to_input(board, legal_moves=None):
+    moves = board.legal_moves if legal_moves is None else legal_moves
+    legal_froms = {canonical_square(m.from_square, board) for m in moves}
+    legal_tos = {canonical_square(m.to_square, board) for m in moves}
     last_from, last_to = [0] * BOARD_SQUARES, [0] * BOARD_SQUARES
     if board.move_stack:
         mv = board.peek()
@@ -81,9 +82,9 @@ def board_to_input(board):
     )
 
 
-def legal_moves_by_square_pair(board, include_promotions=True):
+def legal_moves_by_square_pair(board, legal_moves=None, include_promotions=True):
     moves = {}
-    for move in board.legal_moves:
+    for move in board.legal_moves if legal_moves is None else legal_moves:
         if not include_promotions and move.promotion is not None:
             continue
         key = (

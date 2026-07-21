@@ -50,8 +50,8 @@ def resolve_promotions(boards, moves, model, device):
     return moves
 
 
-def _piece_move_options(board):
-    move_map = legal_moves_by_square_pair(board)
+def _piece_move_options(board, legal_moves=None):
+    move_map = legal_moves_by_square_pair(board, legal_moves=legal_moves)
     by_from = {}
     for (frm, to), move in move_map.items():
         by_from.setdefault(frm, []).append(to)
@@ -145,14 +145,23 @@ def batched_policy_step(
     top_fraction=None,
     max_candidates=None,
 ):
+    legal_moves = [list(board.legal_moves) for board in boards]
     board_inputs = torch.tensor(
-        [board_to_input(board) for board in boards], dtype=torch.long, device=device
+        [
+            board_to_input(board, legal_moves=lm)
+            for board, lm in zip(boards, legal_moves)
+        ],
+        dtype=torch.long,
+        device=device,
     )
     heatmap, value = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
     piece_squares, piece_mask = piece_squares.cpu().numpy(), piece_mask.cpu().numpy()
 
-    move_options = [_piece_move_options(board) for board in boards]
+    move_options = [
+        _piece_move_options(board, legal_moves=lm)
+        for board, lm in zip(boards, legal_moves)
+    ]
     dest_mask = torch.from_numpy(
         _dest_mask_array(piece_squares, piece_mask, move_options)
     ).to(device)
