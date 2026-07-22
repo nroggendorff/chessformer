@@ -181,7 +181,7 @@ def build_scaler(device):
 
 
 def build_scheduler(opt, total_steps):
-    warmup_steps = min(500, total_steps // 20)
+    warmup_steps = min(500, total_steps - 1, max(20, total_steps // 20))
     return torch.optim.lr_scheduler.SequentialLR(
         opt,
         schedulers=[
