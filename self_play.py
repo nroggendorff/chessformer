@@ -168,13 +168,14 @@ def play_games_batched(
         if not trajectory:
             continue
         winner = board.outcome(claim_draw=True).winner if is_finished else None
+        policy_weight = decisive_weight if winner is not None else 1.0
+        value_weight = policy_weight if is_finished else 0.0
         for step in trajectory:
             value_target = (
                 0.0
                 if winner is None
                 else float(1.0 if winner == step["turn"] else -1.0)
             )
-            weight = decisive_weight if winner is not None else 1.0
             samples.append(
                 (
                     np.array(step["board_input"], dtype=np.uint8),
@@ -182,8 +183,8 @@ def play_games_batched(
                     step["policy_pairs"],
                     step["policy_probs"],
                     value_target,
-                    weight,
-                    weight,
+                    policy_weight,
+                    value_weight,
                 )
             )
 
@@ -253,12 +254,13 @@ def generate_self_play_data(
     temperature_floor,
     device,
     config,
+    use_multiprocessing,
     max_workers=None,
     executor=None,
     opponent_model=None,
     opponent_state_dict=None,
 ):
-    if device.type in ("cuda", "mps"):
+    if not use_multiprocessing:
         with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
             return play_games_batched(
                 model,
@@ -305,7 +307,7 @@ def generate_self_play_data(
                 config.mcts_c_puct,
                 config.mcts_dirichlet_alpha,
                 config.mcts_root_noise_frac,
-                device.type,
+                "cpu",
                 opponent_state_dict,
             )
             for i, count in enumerate(counts)
@@ -320,7 +322,7 @@ def generate_self_play_data(
         mp_context=mp.get_context("spawn"),
         initializer=worker_init,
         initargs=(
-            device.type,
+            "cpu",
             config.d_model,
             config.nhead,
             config.enc_layers,
@@ -335,7 +337,7 @@ def generate_self_play_data(
 def run_self_play(
     model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
 ):
-    use_multiprocessing = device.type not in ("cuda", "mps")
+    use_multiprocessing = (config.max_workers or 1) > 1
     max_workers = (
         min(config.max_workers, config.self_play_games_per_iter)
         if use_multiprocessing
@@ -343,7 +345,7 @@ def run_self_play(
     )
 
     print(
-        f"Starting self-play on {device.type} with "
+        f"Training on {device.type}; generating self-play games with "
         + (
             f"{max_workers} CPU worker processes"
             if use_multiprocessing
@@ -357,7 +359,7 @@ def run_self_play(
             mp_context=mp.get_context("spawn"),
             initializer=worker_init,
             initargs=(
-                device.type,
+                "cpu",
                 config.d_model,
                 config.nhead,
                 config.enc_layers,
@@ -419,6 +421,7 @@ def run_self_play(
                     config.self_play_temperature_floor,
                     device,
                     config,
+                    use_multiprocessing,
                     max_workers=max_workers,
                     executor=executor,
                     opponent_model=None if opponent_state is None else opponent_model,

@@ -93,7 +93,16 @@ if __name__ == "__main__":
     scheduler = build_scheduler(opt, total_steps)
     if resuming and os.path.exists(optimizer_state_path(checkpoint_path)):
         load_optimizer_state(opt, scheduler, checkpoint_path)
-        print("Resumed optimizer and LR schedule state from prior run")
+        if scheduler.last_epoch >= total_steps:
+            opt.state.clear()
+            scheduler = build_scheduler(opt, total_steps)
+            print(
+                "Prior LR schedule had already completed — starting a fresh "
+                "schedule on top of the existing weights instead of resuming "
+                "a spent one"
+            )
+        else:
+            print("Resumed optimizer and LR schedule state from prior run")
     elif resuming:
         print(
             "No saved optimizer state found — this run will restart the LR warmup "

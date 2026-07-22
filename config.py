@@ -105,7 +105,7 @@ class Config:
     self_play_opponent_mcts_simulations: int = 100
     inference_mcts_simulations: int = 400
     mcts_sims_per_wave: int = 8
-    mcts_target_batch_size: int = 1024
+    mcts_target_batch_size: int = 8192
     mcts_c_puct: float = 1.5
     mcts_dirichlet_alpha: float = 0.3
     mcts_root_noise_frac: float = 0.25
