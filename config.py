@@ -43,6 +43,25 @@ def cgroup_cpu_quota():
     return None
 
 
+def cgroup_memory_limit_mb():
+    v2_path = "/sys/fs/cgroup/memory.max"
+    if os.path.exists(v2_path):
+        limit = open(v2_path).read().strip()
+        if limit != "max":
+            return int(limit) / (1024**2)
+    v1_path = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+    if os.path.exists(v1_path):
+        limit = int(open(v1_path).read())
+        if limit <= 2**62:
+            return limit / (1024**2)
+    meminfo_path = "/proc/meminfo"
+    if os.path.exists(meminfo_path):
+        for line in open(meminfo_path):
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) / 1024
+    return None
+
+
 def physical_cpu_count():
     if not os.path.exists("/proc/cpuinfo"):
         return None
@@ -101,7 +120,9 @@ class Config:
     self_play_pool_update_interval: int = 25
     self_play_eval_count: int = 8
     self_play_max_workers: int | None = None
-    self_play_worker_max_tasks: int = 4
+    self_play_worker_max_tasks: int = 64
+    self_play_chunk_games: int = 8
+    self_play_memory_safety_margin_mb: float = 3072.0
 
     self_play_mcts_simulations: int = 200
     self_play_opponent_mcts_simulations: int = 100
@@ -140,7 +161,7 @@ class Config:
                 cgroup_cpu_quota() or math.inf,
             )
         if self.self_play_max_workers is None:
-            self.self_play_max_workers = max(1, self.max_workers // 2)
+            self.self_play_max_workers = self.max_workers
 
     def pretrain_steps_for(self, dataset_size):
         return max(1, self.pretrain_epochs * dataset_size // self.pretrain_batch_size)

@@ -5,6 +5,7 @@ import math
 import multiprocessing as mp
 import os
 import random
+import resource
 import time
 
 import numpy as np
@@ -12,8 +13,8 @@ import torch
 from tqdm import tqdm
 
 import chess
-from config import amp_dtype
-from encoding import board_to_input, legal_moves_by_square_pair
+from config import amp_dtype, cgroup_memory_limit_mb
+from encoding import INPUT_SIZE, board_to_input, legal_moves_by_square_pair
 from evaluation import estimate_elo
 from model import ChessNet
 from training import train_batch
@@ -21,22 +22,102 @@ from tree_search import choose_move, run_mcts, visit_policy_pairs
 
 _GLOBAL_MODEL = None
 _GLOBAL_OPPONENT = None
+_WORKER_MODEL_ARGS = None
 
 
 def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
-    global _GLOBAL_MODEL, _GLOBAL_OPPONENT
+    global _GLOBAL_MODEL, _WORKER_MODEL_ARGS
     gc.set_threshold(100000, 50, 50)
     torch.set_num_threads(1)
-    _GLOBAL_MODEL, _GLOBAL_OPPONENT = (
-        ChessNet(
+    _WORKER_MODEL_ARGS = (
+        device_type,
+        d_model,
+        nhead,
+        enc_layers,
+        heatmap_hidden,
+        attn_rank,
+    )
+    _GLOBAL_MODEL = ChessNet(
+        d_model=d_model,
+        nhead=nhead,
+        enc_layers=enc_layers,
+        heatmap_hidden=heatmap_hidden,
+        attn_rank=attn_rank,
+    ).to(torch.device(device_type))
+
+
+def ensure_opponent():
+    global _GLOBAL_OPPONENT
+    if _GLOBAL_OPPONENT is None:
+        device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank = (
+            _WORKER_MODEL_ARGS
+        )
+        _GLOBAL_OPPONENT = ChessNet(
             d_model=d_model,
             nhead=nhead,
             enc_layers=enc_layers,
             heatmap_hidden=heatmap_hidden,
             attn_rank=attn_rank,
         ).to(torch.device(device_type))
-        for _ in range(2)
+    return _GLOBAL_OPPONENT
+
+
+def worker_report_rss_mb():
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+
+def calibrate_self_play_workers(config):
+    if config.self_play_max_workers <= 1:
+        return config.self_play_max_workers
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=mp.get_context("spawn"),
+        initializer=worker_init,
+        initargs=(
+            "cpu",
+            config.d_model,
+            config.nhead,
+            config.enc_layers,
+            config.heatmap_hidden,
+            config.attn_type_rank,
+        ),
+    ) as probe:
+        worker_rss_mb = probe.submit(worker_report_rss_mb).result()
+
+    memory_limit_mb = cgroup_memory_limit_mb()
+    if memory_limit_mb is None:
+        print(f"Self-play worker baseline: {worker_rss_mb:.0f} MB/process")
+        return config.self_play_max_workers
+
+    main_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    budget_mb = memory_limit_mb - main_rss_mb - config.self_play_memory_safety_margin_mb
+    safe_workers = max(1, int(budget_mb // worker_rss_mb))
+    workers = min(config.self_play_max_workers, safe_workers)
+    print(
+        f"Self-play workers: {workers} "
+        f"(~{worker_rss_mb:.0f} MB/worker, {memory_limit_mb:.0f} MB available)"
     )
+    return workers
+
+
+def warmup_train_model(model, train_model, opt, scaler, config, device):
+    state = {k: v.clone() for k, v in model.state_dict().items()}
+    samples = [
+        (
+            np.zeros(INPUT_SIZE, dtype=np.uint8),
+            np.array([[0, 1]], dtype=np.uint8),
+            np.array([[0, 1]], dtype=np.uint8),
+            np.array([1.0], dtype=np.float32),
+            0.0,
+            1.0,
+            1.0,
+        )
+        for _ in range(config.self_play_batch_size)
+    ]
+    train_batch(train_model, opt, scaler, samples, device)
+    model.load_state_dict(state)
+    opt.state.clear()
 
 
 def add_to_pool(pool, model, pool_size):
@@ -210,7 +291,7 @@ def worker_play_games(
     device_type,
     opponent_state_dict=None,
 ):
-    global _GLOBAL_MODEL, _GLOBAL_OPPONENT
+    global _GLOBAL_MODEL
     assert _GLOBAL_MODEL
     random.seed(seed)
     np.random.seed(seed)
@@ -221,9 +302,9 @@ def worker_play_games(
     _GLOBAL_MODEL.eval()
     opponent = None
     if opponent_state_dict is not None:
-        _GLOBAL_OPPONENT.load_state_dict(opponent_state_dict)
-        _GLOBAL_OPPONENT.eval()
-        opponent = _GLOBAL_OPPONENT
+        opponent = ensure_opponent()
+        opponent.load_state_dict(opponent_state_dict)
+        opponent.eval()
 
     return play_games_batched(
         _GLOBAL_MODEL,
@@ -283,9 +364,10 @@ def generate_self_play_data(
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
     state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
-    counts = [total_games // max_workers] * max_workers
-    for i in range(total_games % max_workers):
-        counts[i] += 1
+    chunk = min(config.self_play_chunk_games, total_games)
+    counts = [chunk] * (total_games // chunk) + (
+        [total_games % chunk] if total_games % chunk else []
+    )
     base_seed = time.time_ns() % (2**32 - len(counts))
 
     def submit(pool):
@@ -303,10 +385,7 @@ def generate_self_play_data(
                 config.self_play_mcts_simulations,
                 config.self_play_opponent_mcts_simulations,
                 config.mcts_sims_per_wave,
-                max(
-                    config.mcts_sims_per_wave,
-                    config.mcts_target_batch_size // max_workers,
-                ),
+                config.mcts_target_batch_size,
                 config.mcts_c_puct,
                 config.mcts_dirichlet_alpha,
                 config.mcts_root_noise_frac,
@@ -341,9 +420,13 @@ def generate_self_play_data(
 def run_self_play(
     model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
 ):
+    warmup_train_model(model, train_model, opt, scaler, config, device)
     use_multiprocessing = (config.self_play_max_workers or 1) > 1
     max_workers = (
-        min(config.self_play_max_workers, config.self_play_games_per_iter)
+        min(
+            calibrate_self_play_workers(config) if use_multiprocessing else 1,
+            config.self_play_games_per_iter,
+        )
         if use_multiprocessing
         else None
     )
