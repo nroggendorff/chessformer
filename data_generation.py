@@ -190,8 +190,6 @@ def position_label(value, scores, board, weight=1.0, legal_moves=None):
         legal_moves = list(board.legal_moves)
     pair_scores = {}
     for move, score in scores.items():
-        if move.promotion is not None:
-            continue
         key = (
             canonical_square(move.from_square, board),
             canonical_square(move.to_square, board),
@@ -204,11 +202,7 @@ def position_label(value, scores, board, weight=1.0, legal_moves=None):
             board_to_input(board, legal_moves=legal_moves), dtype=np.uint8
         ),
         "legal_pairs": np.array(
-            list(
-                legal_moves_by_square_pair(
-                    board, legal_moves=legal_moves, include_promotions=False
-                ).keys()
-            ),
+            list(legal_moves_by_square_pair(board, legal_moves=legal_moves).keys()),
             dtype=np.uint8,
         ).reshape(-1, 2),
         "policy_pairs": np.array(list(pair_scores.keys()), dtype=np.uint8).reshape(
