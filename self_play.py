@@ -303,7 +303,10 @@ def generate_self_play_data(
                 config.self_play_mcts_simulations,
                 config.self_play_opponent_mcts_simulations,
                 config.mcts_sims_per_wave,
-                config.mcts_target_batch_size,
+                max(
+                    config.mcts_sims_per_wave,
+                    config.mcts_target_batch_size // max_workers,
+                ),
                 config.mcts_c_puct,
                 config.mcts_dirichlet_alpha,
                 config.mcts_root_noise_frac,
@@ -329,6 +332,7 @@ def generate_self_play_data(
             config.heatmap_hidden,
             config.attn_type_rank,
         ),
+        max_tasks_per_child=config.self_play_worker_max_tasks,
     ) as fresh_executor:
         futures = submit(fresh_executor)
         return [s for f in concurrent.futures.as_completed(futures) for s in f.result()]
@@ -337,9 +341,9 @@ def generate_self_play_data(
 def run_self_play(
     model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
 ):
-    use_multiprocessing = (config.max_workers or 1) > 1
+    use_multiprocessing = (config.self_play_max_workers or 1) > 1
     max_workers = (
-        min(config.max_workers, config.self_play_games_per_iter)
+        min(config.self_play_max_workers, config.self_play_games_per_iter)
         if use_multiprocessing
         else None
     )
@@ -366,6 +370,7 @@ def run_self_play(
                 config.heatmap_hidden,
                 config.attn_type_rank,
             ),
+            max_tasks_per_child=config.self_play_worker_max_tasks,
         )
         if use_multiprocessing
         else contextlib.nullcontext()

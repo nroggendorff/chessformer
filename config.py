@@ -72,7 +72,7 @@ class Config:
     pretrain_node_cap: int | None = 300000
     pretrain_epochs: int = 2
     pretrain_batch_size: int = 128
-    pretrain_hash_mb: int = 512
+    pretrain_hash_mb: int = 128
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
     pretrain_endgame_weight: float = 2.0
@@ -100,6 +100,8 @@ class Config:
     self_play_pool_self_prob: float = 0.75
     self_play_pool_update_interval: int = 25
     self_play_eval_count: int = 8
+    self_play_max_workers: int | None = None
+    self_play_worker_max_tasks: int = 4
 
     self_play_mcts_simulations: int = 200
     self_play_opponent_mcts_simulations: int = 100
@@ -137,6 +139,8 @@ class Config:
                 physical_cpu_count() or multiprocessing.cpu_count(),
                 cgroup_cpu_quota() or math.inf,
             )
+        if self.self_play_max_workers is None:
+            self.self_play_max_workers = max(1, self.max_workers // 2)
 
     def pretrain_steps_for(self, dataset_size):
         return max(1, self.pretrain_epochs * dataset_size // self.pretrain_batch_size)
