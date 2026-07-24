@@ -1,4 +1,5 @@
 import math
+import weakref
 
 import numpy as np
 import torch
@@ -15,6 +16,7 @@ from policy import resolve_promotions
 
 class MCTSNode:
     __slots__ = (
+        "__weakref__",
         "board",
         "parent",
         "move",
@@ -30,7 +32,7 @@ class MCTSNode:
 
     def __init__(self, board, parent=None, move=None, prior=0.0):
         self.board = board
-        self.parent = parent
+        self.parent = None if parent is None else weakref.proxy(parent)
         self.move = move
         self.prior = prior
         self.children = {}
