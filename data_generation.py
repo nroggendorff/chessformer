@@ -213,40 +213,8 @@ def position_label(value, scores, board, weight=1.0, legal_moves=None):
         ),
         "value": value,
         "policy_weight": weight,
-        "value_weight": weight,
+        "value_weight": 0.0,
     }
-
-
-def child_value_rows(board, infos, weight):
-    rows = []
-    for info in infos:
-        if not info.get("pv"):
-            continue
-        move = info["pv"][0]
-        child = board.copy()
-        child.push(move)
-        child_legal_moves = list(child.legal_moves)
-        rows.append(
-            {
-                "board_input": np.array(
-                    board_to_input(child, legal_moves=child_legal_moves), dtype=np.uint8
-                ),
-                "legal_pairs": np.array(
-                    list(
-                        legal_moves_by_square_pair(
-                            child, legal_moves=child_legal_moves
-                        ).keys()
-                    ),
-                    dtype=np.uint8,
-                ).reshape(-1, 2),
-                "policy_pairs": np.zeros((0, 2), dtype=np.uint8),
-                "policy_probs": np.zeros((0,), dtype=np.float32),
-                "value": -score_to_value(info["score"].pov(board.turn)),
-                "policy_weight": 0.0,
-                "value_weight": weight,
-            }
-        )
-    return rows
 
 
 def _should_sample_position(ply, win_probs, sample_ply_ramp, max_win_prob, min_entropy):
@@ -347,7 +315,6 @@ def generate_game(
                     legal_moves=legal_moves,
                 )
             )
-            samples.extend(child_value_rows(board, infos, weight))
         board.push(
             random.choices(list(scores.keys()), weights=list(scores.values()), k=1)[0]
         )
