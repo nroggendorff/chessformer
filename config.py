@@ -119,12 +119,12 @@ class Config:
     self_play_pool_self_prob: float = 0.75
     self_play_pool_update_interval: int = 25
     self_play_eval_count: int = 8
-    self_play_max_workers: int | None = None
+    self_play_max_workers: int | None = 1
     self_play_worker_max_tasks: int = 64
-    self_play_chunk_games: int = 8
+    self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
 
-    self_play_mcts_simulations: int = 200
+    self_play_mcts_simulations: int = 100
     self_play_opponent_mcts_simulations: int = 100
     inference_mcts_simulations: int = 400
     mcts_sims_per_wave: int = 8
