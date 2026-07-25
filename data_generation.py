@@ -185,7 +185,9 @@ def endgame_weight(board, scale):
     )
 
 
-def position_label(value, scores, board, weight=1.0, legal_moves=None):
+def position_label(
+    value, scores, board, weight=1.0, legal_moves=None, include_policy=True
+):
     if legal_moves is None:
         legal_moves = list(board.legal_moves)
     pair_scores = {}
@@ -212,12 +214,12 @@ def position_label(value, scores, board, weight=1.0, legal_moves=None):
             [sc / total for sc in pair_scores.values()], dtype=np.float32
         ),
         "value": value,
-        "policy_weight": weight,
+        "policy_weight": weight if include_policy else 0.0,
         "value_weight": weight,
     }
 
 
-def _should_sample_position(ply, win_probs, sample_ply_ramp, max_win_prob, max_entropy):
+def _should_include_policy(ply, win_probs, sample_ply_ramp, max_win_prob, max_entropy):
     if not win_probs or len(win_probs) < 2:
         return False
     best_wp = max(win_probs.values())
@@ -296,13 +298,7 @@ def generate_game(
         scores = move_scores(
             win_probs, policy_temperature if is_sample else drive_temperature
         )
-        if is_sample and _should_sample_position(
-            board.ply(),
-            win_probs,
-            sample_ply_ramp,
-            max_sample_win_prob,
-            max_sample_entropy,
-        ):
+        if is_sample:
             weight = (depth / depth_range[1]) ** 2 * endgame_weight(
                 board, endgame_weight_scale
             )
@@ -313,6 +309,13 @@ def generate_game(
                     board,
                     weight=weight,
                     legal_moves=legal_moves,
+                    include_policy=_should_include_policy(
+                        board.ply(),
+                        win_probs,
+                        sample_ply_ramp,
+                        max_sample_win_prob,
+                        max_sample_entropy,
+                    ),
                 )
             )
         board.push(
