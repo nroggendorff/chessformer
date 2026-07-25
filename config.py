@@ -99,7 +99,7 @@ class Config:
     pretrain_drive_temperature: float = 0.3
     pretrain_sample_ply_ramp: int = 10
     pretrain_max_sample_win_prob: float = 0.85
-    pretrain_min_sample_entropy: float = 0.3
+    pretrain_max_sample_entropy: float = 1.5
     pretrain_sample_stability: int = 2
     pretrain_sample_score_margin: int = 25
 

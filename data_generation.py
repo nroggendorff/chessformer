@@ -213,11 +213,11 @@ def position_label(value, scores, board, weight=1.0, legal_moves=None):
         ),
         "value": value,
         "policy_weight": weight,
-        "value_weight": 0.0,
+        "value_weight": weight,
     }
 
 
-def _should_sample_position(ply, win_probs, sample_ply_ramp, max_win_prob, min_entropy):
+def _should_sample_position(ply, win_probs, sample_ply_ramp, max_win_prob, max_entropy):
     if not win_probs or len(win_probs) < 2:
         return False
     best_wp = max(win_probs.values())
@@ -228,7 +228,7 @@ def _should_sample_position(ply, win_probs, sample_ply_ramp, max_win_prob, min_e
         return False
     probs = [wp / total for wp in win_probs.values()]
     entropy = -sum(p * math.log(p) for p in probs if p > 1e-10)
-    if entropy < min_entropy:
+    if entropy > max_entropy:
         return False
     keep_prob = 1.0 if sample_ply_ramp <= 0 else min(1.0, (ply + 1) / sample_ply_ramp)
     return random.random() < keep_prob
@@ -248,7 +248,7 @@ def generate_game(
     node_cap=None,
     sample_ply_ramp=10,
     max_sample_win_prob=0.85,
-    min_sample_entropy=0.3,
+    max_sample_entropy=1.5,
     sample_stability=3,
     sample_score_margin=25,
 ):
@@ -301,7 +301,7 @@ def generate_game(
             win_probs,
             sample_ply_ramp,
             max_sample_win_prob,
-            min_sample_entropy,
+            max_sample_entropy,
         ):
             weight = (depth / depth_range[1]) ** 2 * endgame_weight(
                 board, endgame_weight_scale
@@ -336,7 +336,7 @@ def worker_generate_games(
     node_cap=None,
     sample_ply_ramp=10,
     max_sample_win_prob=0.85,
-    min_sample_entropy=0.3,
+    max_sample_entropy=1.5,
     sample_stability=3,
     sample_score_margin=25,
 ):
@@ -358,7 +358,7 @@ def worker_generate_games(
                     node_cap,
                     sample_ply_ramp,
                     max_sample_win_prob,
-                    min_sample_entropy,
+                    max_sample_entropy,
                     sample_stability,
                     sample_score_margin,
                 )
@@ -416,7 +416,7 @@ def generate_pretrain_data(config):
                 config.pretrain_node_cap,
                 config.pretrain_sample_ply_ramp,
                 config.pretrain_max_sample_win_prob,
-                config.pretrain_min_sample_entropy,
+                config.pretrain_max_sample_entropy,
                 config.pretrain_sample_stability,
                 config.pretrain_sample_score_margin,
             )
