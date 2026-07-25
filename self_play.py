@@ -5,100 +5,23 @@ import math
 import multiprocessing as mp
 import os
 import random
-import resource
 import time
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-import chess
-from config import amp_dtype, cgroup_memory_limit_mb
-from encoding import INPUT_SIZE, board_to_input, legal_moves_by_square_pair
+from config import amp_dtype
+from encoding import INPUT_SIZE
 from evaluation import estimate_elo
 from model import ChessNet
+from self_play_game import play_games_batched
+from self_play_workers import (
+    calibrate_self_play_workers,
+    worker_init,
+    worker_play_games,
+)
 from training import train_batch
-from tree_search import choose_move, run_mcts, visit_policy_pairs
-
-_GLOBAL_MODEL = None
-_GLOBAL_OPPONENT = None
-_WORKER_MODEL_ARGS = None
-
-
-def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
-    global _GLOBAL_MODEL, _WORKER_MODEL_ARGS
-    gc.set_threshold(100000, 50, 50)
-    torch.set_num_threads(1)
-    _WORKER_MODEL_ARGS = (
-        device_type,
-        d_model,
-        nhead,
-        enc_layers,
-        heatmap_hidden,
-        attn_rank,
-    )
-    _GLOBAL_MODEL = ChessNet(
-        d_model=d_model,
-        nhead=nhead,
-        enc_layers=enc_layers,
-        heatmap_hidden=heatmap_hidden,
-        attn_rank=attn_rank,
-    ).to(torch.device(device_type))
-
-
-def ensure_opponent():
-    global _GLOBAL_OPPONENT
-    if _GLOBAL_OPPONENT is None:
-        device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank = (
-            _WORKER_MODEL_ARGS
-        )
-        _GLOBAL_OPPONENT = ChessNet(
-            d_model=d_model,
-            nhead=nhead,
-            enc_layers=enc_layers,
-            heatmap_hidden=heatmap_hidden,
-            attn_rank=attn_rank,
-        ).to(torch.device(device_type))
-    return _GLOBAL_OPPONENT
-
-
-def worker_report_rss_mb():
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def calibrate_self_play_workers(config):
-    if config.self_play_max_workers <= 1:
-        return config.self_play_max_workers
-
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=1,
-        mp_context=mp.get_context("spawn"),
-        initializer=worker_init,
-        initargs=(
-            "cpu",
-            config.d_model,
-            config.nhead,
-            config.enc_layers,
-            config.heatmap_hidden,
-            config.attn_type_rank,
-        ),
-    ) as probe:
-        worker_rss_mb = probe.submit(worker_report_rss_mb).result()
-
-    memory_limit_mb = cgroup_memory_limit_mb()
-    if memory_limit_mb is None:
-        print(f"Self-play worker baseline: {worker_rss_mb:.0f} MB/process")
-        return config.self_play_max_workers
-
-    main_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    budget_mb = memory_limit_mb - main_rss_mb - config.self_play_memory_safety_margin_mb
-    safe_workers = max(1, int(budget_mb // worker_rss_mb))
-    workers = min(config.self_play_max_workers, safe_workers)
-    print(
-        f"Self-play workers: {workers} "
-        f"(~{worker_rss_mb:.0f} MB/worker, {memory_limit_mb:.0f} MB available)"
-    )
-    return workers
 
 
 def warmup_train_model(model, train_model, opt, scaler, config, device):
@@ -129,200 +52,6 @@ def add_to_pool(pool, model, pool_size):
 def elo_z_score(candidate_elo, candidate_se, reference_elo, reference_se):
     return (candidate_elo - reference_elo) / math.sqrt(
         (candidate_se or float("inf")) ** 2 + (reference_se or float("inf")) ** 2
-    )
-
-
-def game_over(board, ply, draw_check_interval=4):
-    return board.outcome(claim_draw=ply % draw_check_interval == 0) is not None
-
-
-def play_games_batched(
-    model,
-    device,
-    num_games=128,
-    max_moves=120,
-    sample_moves=15,
-    temperature=1.0,
-    temperature_floor=0.1,
-    decisive_weight=1.5,
-    mcts_simulations=200,
-    opponent_mcts_simulations=100,
-    sims_per_wave=8,
-    target_batch_size=None,
-    c_puct=1.5,
-    dirichlet_alpha=0.3,
-    root_noise_frac=0.25,
-    opponent_model=None,
-):
-    model.eval()
-    if opponent_model is not None:
-        opponent_model.eval()
-    boards = [chess.Board() for _ in range(num_games)]
-    learner_color = [
-        chess.WHITE if random.random() < 0.5 else chess.BLACK for _ in range(num_games)
-    ]
-    trajectories: list[list[dict]] = [[] for _ in range(num_games)]
-    finished = [False] * num_games
-
-    for ply in range(max_moves):
-        active = [i for i, f in enumerate(finished) if not f]
-        if not active:
-            break
-
-        learner_idx = [
-            i
-            for i in active
-            if opponent_model is None or boards[i].turn == learner_color[i]
-        ]
-        opponent_idx = [i for i in active if i not in learner_idx]
-        temperature_now = temperature if ply < sample_moves else temperature_floor
-
-        if learner_idx:
-            roots = run_mcts(
-                [boards[i] for i in learner_idx],
-                model,
-                device,
-                num_simulations=mcts_simulations,
-                sims_per_wave=sims_per_wave,
-                target_batch_size=target_batch_size,
-                c_puct=c_puct,
-                add_root_noise=True,
-                root_dirichlet_alpha=dirichlet_alpha,
-                root_noise_frac=root_noise_frac,
-            )
-            for original_i, root in zip(learner_idx, roots):
-                board = boards[original_i]
-                move = choose_move(root, temperature_now)
-                if move is None:
-                    finished[original_i] = True
-                    continue
-                policy_pairs = visit_policy_pairs(root)
-                trajectories[original_i].append(
-                    {
-                        "board_input": board_to_input(
-                            board, legal_moves=root.legal_moves
-                        ),
-                        "legal_pairs": np.array(
-                            list(
-                                legal_moves_by_square_pair(
-                                    board, legal_moves=root.legal_moves
-                                ).keys()
-                            ),
-                            dtype=np.uint8,
-                        ),
-                        "policy_pairs": np.array(
-                            list(policy_pairs.keys()), dtype=np.uint8
-                        ).reshape(-1, 2),
-                        "policy_probs": np.array(
-                            list(policy_pairs.values()), dtype=np.float32
-                        ),
-                        "turn": board.turn,
-                    }
-                )
-                board.push(move)
-                if game_over(board, ply):
-                    finished[original_i] = True
-
-        if opponent_idx:
-            roots = run_mcts(
-                [boards[i] for i in opponent_idx],
-                opponent_model,
-                device,
-                num_simulations=opponent_mcts_simulations,
-                sims_per_wave=sims_per_wave,
-                target_batch_size=target_batch_size,
-                c_puct=c_puct,
-                add_root_noise=False,
-            )
-            for original_i, root in zip(opponent_idx, roots):
-                board = boards[original_i]
-                move = choose_move(root, temperature_floor)
-                if move is None:
-                    finished[original_i] = True
-                    continue
-                board.push(move)
-                if game_over(board, ply):
-                    finished[original_i] = True
-
-    samples = []
-    for board, trajectory, is_finished in zip(boards, trajectories, finished):
-        if not trajectory:
-            continue
-        winner = board.outcome(claim_draw=True).winner if is_finished else None
-        policy_weight = decisive_weight if winner is not None else 1.0
-        value_weight = policy_weight if is_finished else 0.0
-        for step in trajectory:
-            value_target = (
-                0.0
-                if winner is None
-                else float(1.0 if winner == step["turn"] else -1.0)
-            )
-            samples.append(
-                (
-                    np.array(step["board_input"], dtype=np.uint8),
-                    step["legal_pairs"],
-                    step["policy_pairs"],
-                    step["policy_probs"],
-                    value_target,
-                    policy_weight,
-                    value_weight,
-                )
-            )
-
-    return samples
-
-
-def worker_play_games(
-    state_dict,
-    seed,
-    num_games,
-    max_moves,
-    sample_moves,
-    temperature,
-    temperature_floor,
-    decisive_weight,
-    mcts_simulations,
-    opponent_mcts_simulations,
-    sims_per_wave,
-    target_batch_size,
-    c_puct,
-    dirichlet_alpha,
-    root_noise_frac,
-    device_type,
-    opponent_state_dict=None,
-):
-    global _GLOBAL_MODEL
-    assert _GLOBAL_MODEL
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    device = torch.device(device_type)
-    _GLOBAL_MODEL.load_state_dict(state_dict)
-    _GLOBAL_MODEL.eval()
-    opponent = None
-    if opponent_state_dict is not None:
-        opponent = ensure_opponent()
-        opponent.load_state_dict(opponent_state_dict)
-        opponent.eval()
-
-    return play_games_batched(
-        _GLOBAL_MODEL,
-        device,
-        num_games=num_games,
-        max_moves=max_moves,
-        sample_moves=sample_moves,
-        temperature=temperature,
-        temperature_floor=temperature_floor,
-        decisive_weight=decisive_weight,
-        mcts_simulations=mcts_simulations,
-        opponent_mcts_simulations=opponent_mcts_simulations,
-        sims_per_wave=sims_per_wave,
-        target_batch_size=target_batch_size,
-        c_puct=c_puct,
-        dirichlet_alpha=dirichlet_alpha,
-        root_noise_frac=root_noise_frac,
-        opponent_model=opponent,
     )
 
 
