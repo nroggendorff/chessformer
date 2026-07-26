@@ -46,6 +46,9 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, BOARD_SQUARES),
         )
+        self.value_key = nn.Linear(d_model, d_model)
+        self.value_value = nn.Linear(d_model, d_model)
+        self.value_query = nn.Parameter(torch.zeros(d_model))
         self.value_mlp = nn.Sequential(
             nn.Linear(d_model, heatmap_hidden),
             nn.GELU(),
@@ -95,7 +98,11 @@ class ChessNet(nn.Module):
         )
 
         encoded = self.encoder(seq, query_types, kv_colors)
-        value = self.value_mlp(encoded.mean(dim=1)).squeeze(-1).tanh()
+        attn = torch.softmax(
+            self.value_key(encoded) @ self.value_query / self.d_model**0.5, dim=1
+        )
+        pooled = (attn.unsqueeze(-1) * self.value_value(encoded)).sum(dim=1)
+        value = self.value_mlp(pooled).squeeze(-1).tanh()
         if value_only:
             return None, value
 
