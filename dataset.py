@@ -5,9 +5,9 @@ from data_generation import generate_pretrain_data
 
 COLUMNS = (
     "board_input",
-    "legal_pairs",
-    "policy_pairs",
-    "policy_probs",
+    "target_squares",
+    "target_tokens",
+    "target_weights",
     "value",
     "policy_weight",
     "value_weight",
@@ -21,14 +21,14 @@ def dataset_to_samples(ds):
     return [
         (
             np.array(board_input, dtype=np.uint8),
-            np.array(legal_pairs, dtype=np.uint8),
-            np.array(policy_pairs, dtype=np.uint8),
-            np.array(policy_probs, dtype=np.float32),
+            np.array(target_squares, dtype=np.uint8),
+            np.array(target_tokens, dtype=np.uint8),
+            np.array(target_weights, dtype=np.float32),
             value,
             policy_weight,
             value_weight,
         )
-        for board_input, legal_pairs, policy_pairs, policy_probs, value, policy_weight, value_weight in zip(
+        for board_input, target_squares, target_tokens, target_weights, value, policy_weight, value_weight in zip(
             *(columns[name] for name in COLUMNS)
         )
     ]

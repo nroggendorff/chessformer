@@ -4,38 +4,36 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from config import amp_dtype
-from encoding import BOARD_SQUARES
-from model import MAX_PIECES, piece_gather
+from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS
 
 
-def _piece_targets_and_mask(piece_squares, samples):
-    target = np.zeros((len(samples), MAX_PIECES, BOARD_SQUARES), dtype=np.float32)
-    legal = np.zeros((len(samples), MAX_PIECES, BOARD_SQUARES), dtype=bool)
-    for b, (_, legal_pairs, policy_pairs, policy_probs, *_) in enumerate(samples):
-        slot_of_square = {int(sq): slot for slot, sq in enumerate(piece_squares[b])}
-        for frm, to in legal_pairs:
-            slot = slot_of_square.get(int(frm))
-            if slot is not None:
-                legal[b, slot, to] = True
-        for (frm, to), p in zip(policy_pairs, policy_probs):
-            slot = slot_of_square.get(int(frm))
-            if slot is not None:
-                target[b, slot, to] += p
-    mass = target.sum(axis=-1, keepdims=True)
-    target = np.divide(target, mass, out=np.zeros_like(target), where=mass > 0)
-    return target, legal, mass[..., 0] > 0
+def _board_targets(board_tokens, samples):
+    recolored = np.where(
+        board_tokens == 0,
+        0,
+        np.where(board_tokens <= 6, board_tokens + 6, board_tokens - 6),
+    )
+    target = np.zeros((len(samples), BOARD_SQUARES, NUM_PIECE_TOKENS), dtype=np.float32)
+    active = np.zeros((len(samples), BOARD_SQUARES), dtype=bool)
+    target[
+        np.arange(len(samples))[:, None], np.arange(BOARD_SQUARES)[None, :], recolored
+    ] = 1.0
+    for b, (_, target_squares, target_tokens, target_weights, *_) in enumerate(samples):
+        if len(target_squares):
+            target[b, target_squares] = 0.0
+            np.add.at(target[b], (target_squares, target_tokens), target_weights)
+            active[b, np.unique(target_squares)] = True
+    return target, active
 
 
 def train_batch(model, opt, scaler, samples, device):
     model.train()
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
-    piece_squares, _ = piece_gather(boards[:, :BOARD_SQUARES])
-    target_policy_np, legal_mask_np, active_np = _piece_targets_and_mask(
-        piece_squares.cpu().numpy(), samples
+    target_np, active_np = _board_targets(
+        boards[:, :BOARD_SQUARES].cpu().numpy(), samples
     )
-    target_policy = torch.from_numpy(target_policy_np).to(device)
-    legal_mask = torch.from_numpy(legal_mask_np).to(device)
+    target = torch.from_numpy(target_np).to(device)
     active = torch.from_numpy(active_np).to(device)
     active_count = active.sum(dim=-1).clamp(min=1)
     target_values = torch.tensor(
@@ -50,15 +48,14 @@ def train_batch(model, opt, scaler, samples, device):
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
-        heatmaps, values = model(boards)
-        masked = heatmaps.masked_fill(~legal_mask, -1e4)
-        log_probs = F.log_softmax(masked, dim=-1).clamp(min=-20.0)
-        per_piece_log_prob = (target_policy * log_probs).sum(dim=-1)
-        sample_log_probs = (per_piece_log_prob * active).sum(dim=-1) / active_count
+        board_logits, values = model(boards)
+        log_probs = F.log_softmax(board_logits, dim=-1).clamp(min=-20.0)
+        per_square_log_prob = (target * log_probs).sum(dim=-1)
+        sample_log_probs = (per_square_log_prob * active).sum(dim=-1) / active_count
         policy_loss = (-sample_log_probs * policy_weights).mean()
 
-        piece_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
-        entropy = ((piece_entropy * active).sum(dim=-1) / active_count).mean()
+        square_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
+        entropy = ((square_entropy * active).sum(dim=-1) / active_count).mean()
 
         value_loss = (
             value_weights * F.mse_loss(values, target_values, reduction="none")
@@ -71,14 +68,12 @@ def train_batch(model, opt, scaler, samples, device):
 
     with torch.no_grad():
         has_policy = policy_weights > 0
-        target_entropy = -(
-            target_policy * torch.log(target_policy.clamp(min=1e-12))
-        ).sum(dim=-1)
-        kl_per_sample = ((-per_piece_log_prob.detach() - target_entropy) * active).sum(
+        target_entropy = -(target * torch.log(target.clamp(min=1e-12))).sum(dim=-1)
+        kl_per_sample = ((-per_square_log_prob.detach() - target_entropy) * active).sum(
             dim=-1
         ) / active_count
         top1_match = (
-            target_policy.argmax(dim=-1) == log_probs.detach().argmax(dim=-1)
+            target.argmax(dim=-1) == log_probs.detach().argmax(dim=-1)
         ).float()
         top1_per_sample = (top1_match * active).sum(dim=-1) / active_count
         if has_policy.any():

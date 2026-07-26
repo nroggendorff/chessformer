@@ -29,8 +29,8 @@ def warmup_train_model(model, train_model, opt, scaler, config, device):
     samples = [
         (
             np.zeros(INPUT_SIZE, dtype=np.uint8),
-            np.array([[0, 1]], dtype=np.uint8),
-            np.array([[0, 1]], dtype=np.uint8),
+            np.array([0], dtype=np.uint8),
+            np.array([0], dtype=np.uint8),
             np.array([1.0], dtype=np.float32),
             0.0,
             1.0,
@@ -137,7 +137,7 @@ def generate_self_play_data(
             config.d_model,
             config.nhead,
             config.enc_layers,
-            config.heatmap_hidden,
+            config.value_hidden,
             config.attn_type_rank,
         ),
         max_tasks_per_child=config.self_play_worker_max_tasks,
@@ -179,7 +179,7 @@ def run_self_play(
                 config.d_model,
                 config.nhead,
                 config.enc_layers,
-                config.heatmap_hidden,
+                config.value_hidden,
                 config.attn_type_rank,
             ),
             max_tasks_per_child=config.self_play_worker_max_tasks,
@@ -203,7 +203,7 @@ def run_self_play(
             d_model=config.d_model,
             nhead=config.nhead,
             enc_layers=config.enc_layers,
-            heatmap_hidden=config.heatmap_hidden,
+            value_hidden=config.value_hidden,
             attn_rank=config.attn_type_rank,
         ).to(device)
         opponent_model.eval()

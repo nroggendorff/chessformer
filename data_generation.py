@@ -15,7 +15,7 @@ import chess.engine
 import numpy as np
 from tqdm import tqdm
 
-from encoding import board_to_input, legal_moves_by_square_pair
+from encoding import board_state_target, board_to_input
 
 PIECE_VALUES = {
     chess.PAWN: 1,
@@ -185,29 +185,21 @@ def endgame_weight(board, scale):
     )
 
 
-def position_label(
-    value, scores, board, weight=1.0, legal_moves=None, include_policy=True
-):
-    if legal_moves is None:
-        legal_moves = list(board.legal_moves)
-    pair_scores = {}
-    for move, score in scores.items():
-        key = (move.from_square, move.to_square)
-        pair_scores[key] = pair_scores.get(key, 0.0) + score
-
-    total = sum(pair_scores.values()) or 1.0
+def position_label(value, scores, board, weight=1.0, include_policy=True):
+    target_squares, target_tokens, target_weights = (
+        board_state_target(board, scores)
+        if include_policy
+        else (
+            np.zeros(0, dtype=np.uint8),
+            np.zeros(0, dtype=np.uint8),
+            np.zeros(0, dtype=np.float32),
+        )
+    )
     return {
         "board_input": np.array(board_to_input(board), dtype=np.uint8),
-        "legal_pairs": np.array(
-            list(legal_moves_by_square_pair(board, legal_moves=legal_moves).keys()),
-            dtype=np.uint8,
-        ).reshape(-1, 2),
-        "policy_pairs": np.array(list(pair_scores.keys()), dtype=np.uint8).reshape(
-            -1, 2
-        ),
-        "policy_probs": np.array(
-            [sc / total for sc in pair_scores.values()], dtype=np.float32
-        ),
+        "target_squares": target_squares,
+        "target_tokens": target_tokens,
+        "target_weights": target_weights,
         "value": value,
         "policy_weight": weight if include_policy else 0.0,
         "value_weight": weight,
@@ -303,7 +295,6 @@ def generate_game(
                     scores,
                     board,
                     weight=weight,
-                    legal_moves=legal_moves,
                     include_policy=_should_include_policy(
                         board.ply(),
                         win_probs,

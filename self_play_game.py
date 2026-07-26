@@ -3,8 +3,8 @@ import random
 import chess
 import numpy as np
 
-from encoding import board_to_input, legal_moves_by_square_pair
-from tree_search import choose_move, run_mcts, visit_policy_pairs
+from encoding import board_state_target, board_to_input
+from tree_search import choose_move, run_mcts
 
 
 def game_over(board, ply, draw_check_interval=4):
@@ -71,24 +71,15 @@ def play_games_batched(
                 if move is None:
                     finished[original_i] = True
                     continue
-                policy_pairs = visit_policy_pairs(root)
+                target_squares, target_tokens, target_weights = board_state_target(
+                    board, root.visit_distribution()
+                )
                 trajectories[original_i].append(
                     {
                         "board_input": board_to_input(board),
-                        "legal_pairs": np.array(
-                            list(
-                                legal_moves_by_square_pair(
-                                    board, legal_moves=root.legal_moves
-                                ).keys()
-                            ),
-                            dtype=np.uint8,
-                        ),
-                        "policy_pairs": np.array(
-                            list(policy_pairs.keys()), dtype=np.uint8
-                        ).reshape(-1, 2),
-                        "policy_probs": np.array(
-                            list(policy_pairs.values()), dtype=np.float32
-                        ),
+                        "target_squares": target_squares,
+                        "target_tokens": target_tokens,
+                        "target_weights": target_weights,
                         "turn": board.turn,
                     }
                 )
@@ -133,9 +124,9 @@ def play_games_batched(
             samples.append(
                 (
                     np.array(step["board_input"], dtype=np.uint8),
-                    step["legal_pairs"],
-                    step["policy_pairs"],
-                    step["policy_probs"],
+                    step["target_squares"],
+                    step["target_tokens"],
+                    step["target_weights"],
                     value_target,
                     policy_weight,
                     value_weight,

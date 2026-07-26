@@ -8,15 +8,6 @@ from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN, VOCAB_SIZE
 from piece_attention import PieceAwareEncoder, kv_color_ids, query_type_ids
 
 META_KV_COLOR = 3
-MAX_PIECES = 16
-
-
-def piece_gather(board_tokens):
-    own_piece = (board_tokens >= 1) & (board_tokens <= 6)
-    order = torch.argsort(own_piece.long(), dim=-1, descending=True, stable=True)
-    piece_squares = order[:, :MAX_PIECES]
-    piece_mask = torch.gather(own_piece, 1, piece_squares)
-    return piece_squares, piece_mask
 
 
 class ChessNet(nn.Module):
@@ -29,7 +20,7 @@ class ChessNet(nn.Module):
         d_model=128,
         nhead=4,
         enc_layers=2,
-        heatmap_hidden=128,
+        value_hidden=128,
         attn_rank=32,
     ):
         super().__init__()
@@ -41,18 +32,14 @@ class ChessNet(nn.Module):
         self.encoder = PieceAwareEncoder(
             d_model, nhead, 4 * d_model, enc_layers, attn_rank
         )
-        self.heatmap_mlp = nn.Sequential(
-            nn.Linear(d_model, heatmap_hidden),
-            nn.GELU(),
-            nn.Linear(heatmap_hidden, BOARD_SQUARES),
-        )
+        self.board_norm = nn.LayerNorm(d_model)
         self.value_key = nn.Linear(d_model, d_model)
         self.value_value = nn.Linear(d_model, d_model)
         self.value_query = nn.Parameter(torch.zeros(d_model))
         self.value_mlp = nn.Sequential(
-            nn.Linear(d_model, heatmap_hidden),
+            nn.Linear(d_model, value_hidden),
             nn.GELU(),
-            nn.Linear(heatmap_hidden, 1),
+            nn.Linear(value_hidden, 1),
         )
         self.legal_to_emb, self.last_from_emb = [
             nn.Embedding(2, d_model) for _ in range(2)
@@ -106,14 +93,11 @@ class ChessNet(nn.Module):
         if value_only:
             return None, value
 
-        piece_squares, _ = piece_gather(board_tokens)
-        piece_embeds = torch.gather(
-            encoded[:, :BOARD_SQUARES],
-            1,
-            piece_squares.unsqueeze(-1).expand(-1, -1, self.d_model),
+        board_logits = (
+            self.board_norm(encoded[:, :BOARD_SQUARES])
+            @ self.token_emb.weight[:NUM_PIECE_TOKENS].T
         )
-        heatmap = self.heatmap_mlp(piece_embeds)
-        return heatmap, value
+        return board_logits, value
 
 
 def load_checkpoint(path, device, config):
@@ -121,7 +105,7 @@ def load_checkpoint(path, device, config):
         d_model=config.d_model,
         nhead=config.nhead,
         enc_layers=config.enc_layers,
-        heatmap_hidden=config.heatmap_hidden,
+        value_hidden=config.value_hidden,
         attn_rank=config.attn_type_rank,
     ).to(device)
     model.load_state_dict(load_file(path, device="cpu"))

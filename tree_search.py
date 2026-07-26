@@ -4,9 +4,7 @@ import weakref
 import numpy as np
 import torch
 
-from encoding import BOARD_SQUARES, board_to_input, legal_moves_by_square_pair
-from model import piece_gather
-from policy import resolve_promotions
+from encoding import BOARD_SQUARES, board_square_tokens, board_to_input, child_board
 
 
 class MCTSNode:
@@ -80,25 +78,16 @@ def _softmax(logits):
     return exp / exp.sum()
 
 
-def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
-    move_map = legal_moves_by_square_pair(node.board, legal_moves=node.legal_moves)
-    slot_of_square = {
-        int(sq): slot
-        for slot, sq in enumerate(piece_squares_row)
-        if piece_mask_row[slot]
-    }
-
-    moves, logits = [], []
-    for (frm, to), move in move_map.items():
-        slot = slot_of_square.get(frm)
-        if slot is not None:
-            moves.append(move)
-            logits.append(float(heatmap_row[slot, to]))
-
+def expand_node(node, log_probs_row):
+    moves = node.legal_moves
     if not moves:
         return
-
-    for move, prior in zip(moves, _softmax(logits)):
+    child_tokens = np.array(
+        [board_square_tokens(child_board(node.board, move)) for move in moves],
+        dtype=np.int64,
+    )
+    scores = log_probs_row[np.arange(BOARD_SQUARES)[None, :], child_tokens].sum(axis=-1)
+    for move, prior in zip(moves, _softmax(scores)):
         node.children[move] = MCTSNode(None, parent=node, move=move, prior=float(prior))
     node.expanded = True
 
@@ -137,13 +126,11 @@ def _evaluate_boards(boards, model, device):
         dtype=torch.long,
         device=device,
     )
-    heatmap, value = model(board_inputs)
-    piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
+    board_logits, value = model(board_inputs)
+    log_probs = torch.log_softmax(board_logits, dim=-1)
     return (
-        heatmap.float().cpu().numpy(),
+        log_probs.float().cpu().numpy(),
         value.float().cpu().tolist(),
-        piece_squares.cpu().numpy(),
-        piece_mask.cpu().numpy(),
         legal_moves,
     )
 
@@ -164,14 +151,12 @@ def run_mcts(
 
     live_roots = [root for root in roots if terminal_value(root.board) is None]
     if live_roots:
-        heatmaps, _, piece_squares, piece_masks, legal_moves = _evaluate_boards(
+        log_probs, _, legal_moves = _evaluate_boards(
             [root.board for root in live_roots], model, device
         )
-        for root, hm_row, ps_row, pm_row, lm in zip(
-            live_roots, heatmaps, piece_squares, piece_masks, legal_moves
-        ):
+        for root, lp_row, lm in zip(live_roots, log_probs, legal_moves):
             root.legal_moves = lm
-            expand_node(root, hm_row, ps_row, pm_row)
+            expand_node(root, lp_row)
             if add_root_noise:
                 add_root_dirichlet_noise(root, root_dirichlet_alpha, root_noise_frac)
 
@@ -209,15 +194,13 @@ def run_mcts(
                 pending.append(leaf)
 
         if pending:
-            heatmaps, values, piece_squares, piece_masks, legal_moves = (
-                _evaluate_boards([leaf.board for leaf in pending], model, device)
+            log_probs, values, legal_moves = _evaluate_boards(
+                [leaf.board for leaf in pending], model, device
             )
             leaf_values = {}
-            for leaf, hm_row, ps_row, pm_row, lm, v in zip(
-                pending, heatmaps, piece_squares, piece_masks, legal_moves, values
-            ):
+            for leaf, lp_row, lm, v in zip(pending, log_probs, legal_moves, values):
                 leaf.legal_moves = lm
-                expand_node(leaf, hm_row, ps_row, pm_row)
+                expand_node(leaf, lp_row)
                 leaf_values[id(leaf)] = v
         else:
             leaf_values = {}
@@ -230,14 +213,6 @@ def run_mcts(
             _backup(path, value)
 
     return roots
-
-
-def visit_policy_pairs(root):
-    pairs = {}
-    for move, prob in root.visit_distribution().items():
-        key = (move.from_square, move.to_square)
-        pairs[key] = pairs.get(key, 0.0) + prob
-    return pairs
 
 
 def choose_move(root, temperature):
@@ -276,16 +251,6 @@ def mcts_policy_step(
         root_noise_frac=root_noise_frac,
     )
     moves = [choose_move(root, temperature) for root in roots]
-    live_idx = [i for i, m in enumerate(moves) if m is not None]
-    if any(moves[i].promotion is not None for i in live_idx):
-        resolved = resolve_promotions(
-            [boards[i] for i in live_idx],
-            [moves[i] for i in live_idx],
-            model,
-            device,
-        )
-        for i, move in zip(live_idx, resolved):
-            moves[i] = move
     return moves, roots
 
 

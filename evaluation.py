@@ -69,9 +69,7 @@ def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
         if board.is_game_over(claim_draw=True):
             break
         if board.turn == mover:
-            moves, _, _, _ = batched_policy_step(
-                [board], model, device, temperature=0.0
-            )
+            moves, _ = batched_policy_step([board], model, device, temperature=0.0)
             board.push(moves[0])
         else:
             board.push(engine.play(board, limit).move)
@@ -141,7 +139,7 @@ def play_anchor_games_parallel(executor, model, device, num_games, max_moves, mo
         engine_idx = [i for i in active if i not in learner_idx]
 
         if learner_idx:
-            moves, _, _, _ = batched_policy_step(
+            moves, _ = batched_policy_step(
                 [boards[i] for i in learner_idx], model, device, temperature=0.0
             )
             assert len(moves) == len(learner_idx)

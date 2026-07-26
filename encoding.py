@@ -1,4 +1,5 @@
 import chess
+import numpy as np
 
 TOKEN_EMPTY = 0
 BOARD_SQUARES = 64
@@ -78,14 +79,66 @@ def board_to_input(board):
     )
 
 
-def legal_moves_by_square_pair(board, legal_moves=None, include_promotions=True):
-    moves = {}
-    for move in board.legal_moves if legal_moves is None else legal_moves:
-        if not include_promotions and move.promotion is not None:
-            continue
-        key = (move.from_square, move.to_square)
-        if move.promotion in (None, chess.QUEEN):
-            moves[key] = move
-        else:
-            moves.setdefault(key, move)
-    return moves
+def board_square_tokens(board):
+    return board_to_tokens(board)[:BOARD_SQUARES]
+
+
+def child_board(board, move):
+    child = board.copy()
+    child.push(move)
+    return child
+
+
+def move_touched_squares(board, move):
+    squares = {move.from_square, move.to_square}
+    if board.is_en_passant(move):
+        squares.add(move.to_square + (-8 if board.turn == chess.WHITE else 8))
+    elif board.is_castling(move):
+        rank = chess.square_rank(move.from_square)
+        kingside = chess.square_file(move.to_square) > chess.square_file(
+            move.from_square
+        )
+        squares.update(
+            {
+                chess.square(7 if kingside else 0, rank),
+                chess.square(5 if kingside else 3, rank),
+            }
+        )
+    return squares
+
+
+def board_state_target(board, move_weights):
+    total = sum(move_weights.values()) or 1.0
+    tokens = board_square_tokens(board)
+    base = [0 if t == 0 else t + 6 if t <= 6 else t - 6 for t in tokens]
+
+    dist = {}
+    for move, weight in move_weights.items():
+        weight /= total
+        child_tokens = board_square_tokens(child_board(board, move))
+        for square in move_touched_squares(board, move):
+            votes = dist.setdefault(square, {})
+            votes[child_tokens[square]] = votes.get(child_tokens[square], 0.0) + weight
+
+    for square, votes in dist.items():
+        covered = sum(votes.values())
+        if covered < 1.0:
+            votes[base[square]] = votes.get(base[square], 0.0) + (1.0 - covered)
+
+    flat = [
+        (square, token, weight)
+        for square, votes in dist.items()
+        for token, weight in votes.items()
+    ]
+    if not flat:
+        return (
+            np.zeros(0, dtype=np.uint8),
+            np.zeros(0, dtype=np.uint8),
+            np.zeros(0, dtype=np.float32),
+        )
+    squares, tokens_, weights = zip(*flat)
+    return (
+        np.array(squares, dtype=np.uint8),
+        np.array(tokens_, dtype=np.uint8),
+        np.array(weights, dtype=np.float32),
+    )
