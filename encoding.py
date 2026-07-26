@@ -2,9 +2,9 @@ import chess
 
 TOKEN_EMPTY = 0
 BOARD_SQUARES = 64
-SEQ_LEN = 68
-INPUT_SIZE = SEQ_LEN + 4 * BOARD_SQUARES
-VOCAB_SIZE = 48
+SEQ_LEN = 69
+INPUT_SIZE = SEQ_LEN + 2 * BOARD_SQUARES
+VOCAB_SIZE = 50
 NUM_PIECE_TOKENS = 13
 
 PIECE_BBS = (
@@ -21,24 +21,20 @@ EP_NONE = 29
 EP_FILE_BASE = 30
 CLOCK_BASE = 38
 REPETITION_BASE = 45
-
-
-def canonical_square(square, board):
-    return chess.square_mirror(square) if board.turn == chess.BLACK else square
+STM_BASE = 48
 
 
 def board_to_tokens(board):
     mover, opponent = board.turn, not board.turn
-    flip = mover == chess.BLACK
     tokens = [TOKEN_EMPTY] * BOARD_SQUARES
     mover_bb, opponent_bb = board.occupied_co[mover], board.occupied_co[opponent]
 
     for piece_type, attr in PIECE_BBS:
         bb = getattr(board, attr)
         for sq in chess.scan_reversed(bb & mover_bb):
-            tokens[chess.square_mirror(sq) if flip else sq] = piece_type
+            tokens[sq] = piece_type
         for sq in chess.scan_reversed(bb & opponent_bb):
-            tokens[chess.square_mirror(sq) if flip else sq] = piece_type + 6
+            tokens[sq] = piece_type + 6
 
     castling = (
         int(board.has_kingside_castling_rights(mover))
@@ -59,26 +55,26 @@ def board_to_tokens(board):
             ep_token,
             CLOCK_BASE + min(board.halfmove_clock // 10, 6),
             REPETITION_BASE + repetition,
+            STM_BASE + int(mover == chess.BLACK),
         ]
     )
     return tokens
 
 
-def board_to_input(board, legal_moves=None):
-    moves = board.legal_moves if legal_moves is None else legal_moves
-    legal_froms = {canonical_square(m.from_square, board) for m in moves}
-    legal_tos = {canonical_square(m.to_square, board) for m in moves}
-    last_from, last_to = [0] * BOARD_SQUARES, [0] * BOARD_SQUARES
+def board_to_input(board):
+    last_from = [0] * BOARD_SQUARES
     if board.move_stack:
-        mv = board.peek()
-        last_from[canonical_square(mv.from_square, board)] = 1
-        last_to[canonical_square(mv.to_square, board)] = 1
+        last_from[board.peek().from_square] = 1
+    attacked = {
+        square
+        for origin in chess.SQUARES
+        if board.piece_at(origin)
+        for square in board.attacks(origin)
+    }
     return (
         board_to_tokens(board)
-        + [int(i in legal_froms) for i in range(BOARD_SQUARES)]
-        + [int(i in legal_tos) for i in range(BOARD_SQUARES)]
+        + [int(sq in attacked) for sq in range(BOARD_SQUARES)]
         + last_from
-        + last_to
     )
 
 
@@ -87,10 +83,7 @@ def legal_moves_by_square_pair(board, legal_moves=None, include_promotions=True)
     for move in board.legal_moves if legal_moves is None else legal_moves:
         if not include_promotions and move.promotion is not None:
             continue
-        key = (
-            canonical_square(move.from_square, board),
-            canonical_square(move.to_square, board),
-        )
+        key = (move.from_square, move.to_square)
         if move.promotion in (None, chess.QUEEN):
             moves[key] = move
         else:

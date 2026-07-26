@@ -4,12 +4,7 @@ import weakref
 import numpy as np
 import torch
 
-from encoding import (
-    BOARD_SQUARES,
-    board_to_input,
-    canonical_square,
-    legal_moves_by_square_pair,
-)
+from encoding import BOARD_SQUARES, board_to_input, legal_moves_by_square_pair
 from model import piece_gather
 from policy import resolve_promotions
 
@@ -138,7 +133,7 @@ def _backup(path, value):
 def _evaluate_boards(boards, model, device):
     legal_moves = [list(b.legal_moves) for b in boards]
     board_inputs = torch.tensor(
-        [board_to_input(b, legal_moves=lm) for b, lm in zip(boards, legal_moves)],
+        [board_to_input(b) for b in boards],
         dtype=torch.long,
         device=device,
     )
@@ -240,10 +235,7 @@ def run_mcts(
 def visit_policy_pairs(root):
     pairs = {}
     for move, prob in root.visit_distribution().items():
-        key = (
-            canonical_square(move.from_square, root.board),
-            canonical_square(move.to_square, root.board),
-        )
+        key = (move.from_square, move.to_square)
         pairs[key] = pairs.get(key, 0.0) + prob
     return pairs
 

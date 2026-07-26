@@ -147,10 +147,7 @@ def batched_policy_step(
 ):
     legal_moves = [list(board.legal_moves) for board in boards]
     board_inputs = torch.tensor(
-        [
-            board_to_input(board, legal_moves=lm)
-            for board, lm in zip(boards, legal_moves)
-        ],
+        [board_to_input(board) for board in boards],
         dtype=torch.long,
         device=device,
     )

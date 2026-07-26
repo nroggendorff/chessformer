@@ -74,9 +74,7 @@ def play_games_batched(
                 policy_pairs = visit_policy_pairs(root)
                 trajectories[original_i].append(
                     {
-                        "board_input": board_to_input(
-                            board, legal_moves=root.legal_moves
-                        ),
+                        "board_input": board_to_input(board),
                         "legal_pairs": np.array(
                             list(
                                 legal_moves_by_square_pair(

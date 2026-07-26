@@ -51,12 +51,9 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, 1),
         )
-        (
-            self.legal_from_emb,
-            self.legal_to_emb,
-            self.last_from_emb,
-            self.last_to_emb,
-        ) = [nn.Embedding(2, d_model) for _ in range(4)]
+        self.legal_to_emb, self.last_from_emb = [
+            nn.Embedding(2, d_model) for _ in range(2)
+        ]
         self.register_buffer(
             "ranks", torch.arange(BOARD_SQUARES) // 8, persistent=False
         )
@@ -76,18 +73,8 @@ class ChessNet(nn.Module):
                 self.token_emb(board_tokens)
                 + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
                 + self.file_emb(self.files.expand(B, BOARD_SQUARES))
-                + self.legal_from_emb(board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES])
-                + self.legal_to_emb(
-                    board_input[
-                        :, SEQ_LEN + BOARD_SQUARES : SEQ_LEN + 2 * BOARD_SQUARES
-                    ]
-                )
-                + self.last_from_emb(
-                    board_input[
-                        :, SEQ_LEN + 2 * BOARD_SQUARES : SEQ_LEN + 3 * BOARD_SQUARES
-                    ]
-                )
-                + self.last_to_emb(board_input[:, SEQ_LEN + 3 * BOARD_SQUARES :]),
+                + self.legal_to_emb(board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES])
+                + self.last_from_emb(board_input[:, SEQ_LEN + BOARD_SQUARES :]),
                 self.token_emb(meta_tokens)
                 + self.meta_pos_emb(
                     self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
