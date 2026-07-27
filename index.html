@@ -504,6 +504,102 @@
       background: var(--accent-hover);
       border-color: var(--accent-hover);
     }
+
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .switch-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .switch-hint {
+      margin: 8px 0 0 0;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text-dim);
+    }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 22px;
+      flex: none;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .switch-track {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      background: var(--panel-bg-alt);
+      border: 1px solid var(--border-color);
+      border-radius: 22px;
+      transition: background 0.15s;
+    }
+
+    .switch-track::before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      bottom: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      transition:
+        transform 0.15s,
+        background 0.15s;
+    }
+
+    .switch input:checked + .switch-track {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .switch input:checked + .switch-track::before {
+      transform: translateX(18px);
+      background: var(--accent-text);
+    }
+
+    #model-view-badge {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      padding: 6px 0;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: var(--accent-text);
+      background: var(--accent);
+      z-index: 20;
+      display: none;
+    }
+
+    #board-container.model-view {
+      box-shadow: 0 0 0 3px var(--accent);
+    }
+
+    #board-container.model-view #model-view-badge {
+      display: block;
+    }
+
+    #board-container.model-view #board-bg svg {
+      filter: saturate(0.45) brightness(0.8);
+    }
   </style>
 </head>
 
@@ -523,6 +619,7 @@
         <div id="board-bg"></div>
         <div id="board-highlights"></div>
         <div id="board-pieces"></div>
+        <div id="model-view-badge">Model View · Unfiltered</div>
 
         <div id="promotion-overlay">
           <div class="promotion-dialog">
@@ -552,6 +649,20 @@
         <div class="panel btn-row">
           <button type="button" id="newgame" class="primary">New Game</button>
           <button type="button" id="undo">Undo Move</button>
+        </div>
+
+        <div class="panel">
+          <div class="switch-row">
+            <span class="switch-label">Model's raw view</span>
+            <label class="switch">
+              <input type="checkbox" id="model-view-toggle" />
+              <span class="switch-track"></span>
+            </label>
+          </div>
+          <p class="switch-hint">
+            Argmax-decoded board prediction, straight from the model with no
+            legality filtering.
+          </p>
         </div>
 
         <div class="panel" id="captured-panel">
@@ -590,6 +701,7 @@
     let selected = null;
     let captureLog = [];
     let moveInFlight = false;
+    let modelViewActive = false;
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -1104,14 +1216,48 @@
       render(await (await fetch("/api/state")).json());
     }
 
+    async function enterModelView() {
+      modelViewActive = true;
+      moveInFlight = true;
+      clearSelection();
+      document.getElementById("board-container").classList.add("model-view");
+      const data = await (await fetch("/api/model_view")).json();
+      fullRebuild(data.pieces, null);
+    }
+
+    function exitModelView() {
+      modelViewActive = false;
+      moveInFlight = false;
+      document.getElementById("board-container").classList.remove("model-view");
+    }
+
+    document
+      .getElementById("model-view-toggle")
+      .addEventListener("change", async (e) => {
+        if (e.target.checked) {
+          await enterModelView();
+        } else {
+          exitModelView();
+          await refresh();
+        }
+      });
+
     document.getElementById("newgame").addEventListener("click", async () => {
       hidePromotionModal();
+      if (modelViewActive) {
+        document.getElementById("model-view-toggle").checked = false;
+        exitModelView();
+      }
       captureLog = [];
       render(await (await fetch("/api/new", { method: "POST" })).json());
     });
 
     document.getElementById("undo").addEventListener("click", async () => {
       hidePromotionModal();
+      if (modelViewActive) {
+        document.getElementById("model-view-toggle").checked = false;
+        exitModelView();
+      }
       render(await (await fetch("/api/undo", { method: "POST" })).json());
     });
 

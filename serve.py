@@ -5,9 +5,11 @@ import os
 import chess
 import chess.engine
 import chess.svg
+import torch
 from flask import Flask, jsonify, render_template, request
 
 from config import Config, default_checkpoint_path, get_device
+from encoding import board_to_input
 from model import load_checkpoint
 from tree_search import mcts_move
 
@@ -159,6 +161,30 @@ def legal_move_map(board):
     return {square: sorted(set(squares)) for square, squares in targets.items()}
 
 
+def colored_symbol(piece_type, color):
+    symbol = chess.piece_symbol(piece_type)
+    return symbol.upper() if color == chess.WHITE else symbol
+
+
+def model_view_pieces(board, model, device):
+    board_input = torch.tensor([board_to_input(board)], dtype=torch.long, device=device)
+    with torch.inference_mode():
+        board_logits, _ = model(board_input)
+    tokens = board_logits[0].argmax(dim=-1).tolist()
+    next_mover = not board.turn
+    return [
+        {
+            "square": chess.square_name(square),
+            "symbol": colored_symbol(
+                token if token <= 6 else token - 6,
+                next_mover if token <= 6 else board.turn,
+            ),
+        }
+        for square, token in enumerate(tokens)
+        if token
+    ]
+
+
 def serialize(board, score):
     pieces = [
         {"square": chess.square_name(sq), "symbol": piece.symbol()}
@@ -237,6 +263,12 @@ def index():
 @app.route("/api/state")
 def api_state():
     return jsonify(serialize(state["board"], state["last_score"]))
+
+
+@app.route("/api/model_view")
+def api_model_view():
+    pieces = model_view_pieces(state["board"], state["model"], state["device"])
+    return jsonify({"pieces": pieces})
 
 
 @app.route("/api/new", methods=["POST"])
