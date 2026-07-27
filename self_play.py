@@ -274,6 +274,7 @@ def run_self_play(
                         opt.state.clear()
                         elo_state["elo_ema"] = elo_state["best_elo"]
                         bad_evals = 0
+                        replay.reset_rl()
                 else:
                     bad_evals = 0
                 pbar.unpause()
