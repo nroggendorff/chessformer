@@ -7,7 +7,7 @@ import chess
 import chess.engine
 
 from data_generation import pin_to_next_cpu
-from policy import batched_policy_step
+from tree_search import mcts_policy_step
 
 ELO_EVAL_ANCHOR_SPREAD = (-200, 0, 200)
 
@@ -61,7 +61,7 @@ def rating_standard_error(rating, calibrated_results):
     )
 
 
-def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
+def play_eval_game(engine, model, device, config, model_is_white, max_moves, limit):
     board = chess.Board()
     mover = chess.WHITE if model_is_white else chess.BLACK
     plies = 0
@@ -69,8 +69,14 @@ def play_eval_game(engine, model, device, model_is_white, max_moves, limit):
         if board.is_game_over(claim_draw=True):
             break
         if board.turn == mover:
-            moves, _, _, _ = batched_policy_step(
-                [board], model, device, temperature=0.0
+            moves, _ = mcts_policy_step(
+                [board],
+                model,
+                device,
+                num_simulations=config.inference_mcts_simulations,
+                sims_per_wave=config.mcts_sims_per_wave,
+                c_puct=config.mcts_c_puct,
+                temperature=0.0,
             )
             board.push(moves[0])
         else:
@@ -122,7 +128,9 @@ def eval_worker_timeout_score(fen, mover_is_white, depth=10):
     return 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
 
 
-def play_anchor_games_parallel(executor, model, device, num_games, max_moves, movetime):
+def play_anchor_games_parallel(
+    executor, model, device, config, num_games, max_moves, movetime
+):
     boards = [chess.Board() for _ in range(num_games)]
     model_is_white = [i % 2 == 0 for i in range(num_games)]
     finished = [False] * num_games
@@ -141,8 +149,14 @@ def play_anchor_games_parallel(executor, model, device, num_games, max_moves, mo
         engine_idx = [i for i in active if i not in learner_idx]
 
         if learner_idx:
-            moves, _, _, _ = batched_policy_step(
-                [boards[i] for i in learner_idx], model, device, temperature=0.0
+            moves, _ = mcts_policy_step(
+                [boards[i] for i in learner_idx],
+                model,
+                device,
+                num_simulations=config.inference_mcts_simulations,
+                sims_per_wave=config.mcts_sims_per_wave,
+                c_puct=config.mcts_c_puct,
+                temperature=0.0,
             )
             assert len(moves) == len(learner_idx)
             for i, move in zip(learner_idx, moves):
@@ -189,7 +203,15 @@ def play_anchor_games_parallel(executor, model, device, num_games, max_moves, mo
 
 
 def play_anchor_games(
-    engine_path, model, device, anchor, num_games, max_moves, movetime, max_workers
+    engine_path,
+    model,
+    device,
+    config,
+    anchor,
+    num_games,
+    max_moves,
+    movetime,
+    max_workers,
 ):
     with chess.engine.SimpleEngine.popen_uci(engine_path) as probe_engine:
         elo = clamp_uci_elo(probe_engine, anchor)
@@ -205,7 +227,7 @@ def play_anchor_games(
         initargs=(engine_path, elo, cpu_counter, cpu_lock),
     ) as executor:
         results = play_anchor_games_parallel(
-            executor, model, device, num_games, max_moves, movetime
+            executor, model, device, config, num_games, max_moves, movetime
         )
 
     return {
@@ -225,6 +247,7 @@ def estimate_elo(model, device, config, state):
             config.stockfish_path,
             model,
             device,
+            config,
             anchor,
             games_per_anchor,
             config.elo_eval_max_moves,

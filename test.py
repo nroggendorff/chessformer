@@ -73,7 +73,7 @@ def configure_engine(engine, level):
     return chess.engine.Limit(time=MOVETIME, depth=level["depth"]), level
 
 
-def play_level_games(stockfish_path, model, device, level, num_games):
+def play_level_games(stockfish_path, model, device, config, level, num_games):
     with chess.engine.SimpleEngine.popen_uci(stockfish_path) as engine:
         try:
             limit, actual_level = configure_engine(engine, level)
@@ -85,7 +85,7 @@ def play_level_games(stockfish_path, model, device, level, num_games):
         label = get_level_label(actual_level)
 
         games = [
-            play_eval_game(engine, model, device, i % 2 == 0, MAX_MOVES, limit)
+            play_eval_game(engine, model, device, config, i % 2 == 0, MAX_MOVES, limit)
             for i in tqdm(range(num_games), desc=f"vs {label}", leave=False)
         ]
 
@@ -105,12 +105,12 @@ def play_level_games(stockfish_path, model, device, level, num_games):
     }
 
 
-def run_adaptive_ladder(stockfish_path, model, device):
+def run_adaptive_ladder(stockfish_path, model, device, config):
     tested = {}
 
     for i in range(START_INDEX, len(LADDER)):
         result = play_level_games(
-            stockfish_path, model, device, LADDER[i], GAMES_PER_LEVEL
+            stockfish_path, model, device, config, LADDER[i], GAMES_PER_LEVEL
         )
         if result:
             tested[i] = result
@@ -120,7 +120,7 @@ def run_adaptive_ladder(stockfish_path, model, device):
     if START_INDEX in tested and tested[START_INDEX]["score"] == 0:
         for i in range(START_INDEX - 1, -1, -1):
             result = play_level_games(
-                stockfish_path, model, device, LADDER[i], GAMES_PER_LEVEL
+                stockfish_path, model, device, config, LADDER[i], GAMES_PER_LEVEL
             )
             if result:
                 tested[i] = result
@@ -258,7 +258,7 @@ def main():
 
     print(f"Loaded checkpoint: {CHECKPOINT_PATH} on {device}")
 
-    levels = run_adaptive_ladder(config.stockfish_path, model, device)
+    levels = run_adaptive_ladder(config.stockfish_path, model, device, config)
     calibrated = [lvl for lvl in levels if "elo" in lvl["level"]]
 
     rating = fit_rating(calibrated)

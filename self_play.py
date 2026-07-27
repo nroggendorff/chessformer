@@ -273,6 +273,7 @@ def run_self_play(
                         scheduler.load_state_dict(elo_state["best_scheduler_state"])
                         opt.state.clear()
                         elo_state["elo_ema"] = elo_state["best_elo"]
+                        replay.reset_rl()
                         bad_evals = 0
                 else:
                     bad_evals = 0

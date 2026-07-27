@@ -135,7 +135,7 @@ class Config:
 
     elo_eval_count: int = 2
     elo_eval_games: int = 90
-    elo_eval_anchor: int = 1320
+    elo_eval_anchor: int = 1550
     elo_eval_max_moves: int = 120
     elo_eval_movetime: float = 0.2
     elo_eval_ema_alpha: float = 0.3
