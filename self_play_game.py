@@ -117,11 +117,14 @@ def play_games_batched(
                 if game_over(board, ply):
                     finished[original_i] = True
 
-    samples = []
+    samples, decisive, drawn = [], 0, 0
     for board, trajectory, is_finished in zip(boards, trajectories, finished):
+        winner = board.outcome(claim_draw=True).winner if is_finished else None
+        if is_finished:
+            drawn += winner is None
+            decisive += winner is not None
         if not trajectory:
             continue
-        winner = board.outcome(claim_draw=True).winner if is_finished else None
         policy_weight = decisive_weight if winner is not None else 1.0
         value_weight = policy_weight if is_finished else 0.0
         for step in trajectory:
@@ -142,4 +145,10 @@ def play_games_batched(
                 )
             )
 
-    return samples
+    stats = {
+        "games": num_games,
+        "decisive": decisive,
+        "drawn": drawn,
+        "unresolved": num_games - decisive - drawn,
+    }
+    return samples, stats

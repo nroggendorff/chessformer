@@ -55,6 +55,17 @@ def elo_z_score(candidate_elo, candidate_se, reference_elo, reference_se):
     )
 
 
+def _collect_worker_results(futures):
+    samples = []
+    stats = {"games": 0, "decisive": 0, "drawn": 0, "unresolved": 0}
+    for f in concurrent.futures.as_completed(futures):
+        chunk_samples, chunk_stats = f.result()
+        samples.extend(chunk_samples)
+        for key in stats:
+            stats[key] += chunk_stats[key]
+    return samples, stats
+
+
 def generate_self_play_data(
     model,
     total_games,
@@ -125,8 +136,7 @@ def generate_self_play_data(
         ]
 
     if executor is not None:
-        futures = submit(executor)
-        return [s for f in concurrent.futures.as_completed(futures) for s in f.result()]
+        return _collect_worker_results(submit(executor))
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=max_workers,
@@ -142,8 +152,7 @@ def generate_self_play_data(
         ),
         max_tasks_per_child=config.self_play_worker_max_tasks,
     ) as fresh_executor:
-        futures = submit(fresh_executor)
-        return [s for f in concurrent.futures.as_completed(futures) for s in f.result()]
+        return _collect_worker_results(submit(fresh_executor))
 
 
 def run_self_play(
@@ -218,6 +227,10 @@ def run_self_play(
         eval_interval = max(
             1, config.self_play_iterations // config.self_play_eval_count
         )
+        pool_update_interval = min(
+            config.self_play_pool_update_interval,
+            max(1, config.self_play_iterations // config.self_play_pool_size),
+        )
         bad_evals = 0
         for it in pbar:
             opponent_state = (
@@ -228,25 +241,24 @@ def run_self_play(
             if opponent_state is not None and not use_multiprocessing:
                 opponent_model.load_state_dict(opponent_state)
 
-            replay.extend_rl(
-                generate_self_play_data(
-                    model,
-                    config.self_play_games_per_iter,
-                    config.self_play_max_moves,
-                    config.self_play_sample_moves,
-                    config.self_play_temperature,
-                    config.self_play_temperature_floor,
-                    device,
-                    config,
-                    use_multiprocessing,
-                    max_workers=max_workers,
-                    executor=executor,
-                    opponent_model=None if opponent_state is None else opponent_model,
-                    opponent_state_dict=opponent_state,
-                )
+            samples, sp_stats = generate_self_play_data(
+                model,
+                config.self_play_games_per_iter,
+                config.self_play_max_moves,
+                config.self_play_sample_moves,
+                config.self_play_temperature,
+                config.self_play_temperature_floor,
+                device,
+                config,
+                use_multiprocessing,
+                max_workers=max_workers,
+                executor=executor,
+                opponent_model=None if opponent_state is None else opponent_model,
+                opponent_state_dict=opponent_state,
             )
+            replay.extend_rl(samples)
 
-            if (it + 1) % config.self_play_pool_update_interval == 0:
+            if (it + 1) % pool_update_interval == 0:
                 add_to_pool(pool, model, config.self_play_pool_size)
 
             if (it + 1) % eval_interval == 0:
@@ -281,6 +293,12 @@ def run_self_play(
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
             )
+            finish_postfix = {
+                "resolved": (
+                    f"{(sp_stats['decisive'] + sp_stats['drawn']) / sp_stats['games']:.0%}"
+                ),
+                "decisive": f"{sp_stats['decisive'] / sp_stats['games']:.0%}",
+            }
 
             if len(replay.rl_buf) > 0:
                 losses = []
@@ -301,13 +319,18 @@ def run_self_play(
                             "policy": f"{avg_p:.3f}",
                             "value": f"{avg_v:.3f}",
                             "rl_buf": len(replay.rl_buf),
+                            **finish_postfix,
                             **elo_postfix,
                         }
                     )
                 else:
-                    pbar.set_postfix({"rl_buf": len(replay.rl_buf), **elo_postfix})
+                    pbar.set_postfix(
+                        {"rl_buf": len(replay.rl_buf), **finish_postfix, **elo_postfix}
+                    )
             else:
-                pbar.set_postfix({"rl_buf": len(replay.rl_buf), **elo_postfix})
+                pbar.set_postfix(
+                    {"rl_buf": len(replay.rl_buf), **finish_postfix, **elo_postfix}
+                )
 
             if device.type == "cuda":
                 torch.cuda.empty_cache()
