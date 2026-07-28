@@ -112,9 +112,10 @@ class Config:
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 16
     self_play_decisive_weight: float = 1.5
+    self_play_lr: float = 2e-5
     self_play_promote_z: float = 0.5
     self_play_rollback_z: float = 1.5
-    self_play_rollback_patience: int = 2
+    self_play_rollback_patience: int = 1
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.75
     self_play_pool_update_interval: int = 25
@@ -124,8 +125,8 @@ class Config:
     self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
 
-    self_play_mcts_simulations: int = 100
-    self_play_opponent_mcts_simulations: int = 100
+    self_play_mcts_simulations: int = 250
+    self_play_opponent_mcts_simulations: int = 250
     inference_mcts_simulations: int = 400
     mcts_sims_per_wave: int = 8
     mcts_target_batch_size: int = 8192
@@ -195,6 +196,12 @@ def build_optimizer(model, config):
         ],
         lr=config.lr,
     )
+
+
+def set_optimizer_lr(opt, lr):
+    for group in opt.param_groups:
+        group["lr"] = lr
+    return opt
 
 
 def build_scaler(device):

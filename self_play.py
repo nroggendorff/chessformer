@@ -270,6 +270,10 @@ def run_self_play(
                     elo_state["best_se"],
                 )
                 if z > config.self_play_promote_z:
+                    pbar.write(
+                        f"[iter {it + 1}] promoted: elo_ema {elo_ema:.0f} "
+                        f"vs best {elo_state['best_elo']:.0f} (z={z:.2f})"
+                    )
                     elo_state["best_elo"] = elo_ema
                     elo_state["best_se"] = elo_state["last_se"]
                     elo_state["best_state"] = {
@@ -280,7 +284,16 @@ def run_self_play(
                     bad_evals = 0
                 elif z < -config.self_play_rollback_z:
                     bad_evals += 1
+                    pbar.write(
+                        f"[iter {it + 1}] bad eval: elo_ema {elo_ema:.0f} "
+                        f"vs best {elo_state['best_elo']:.0f} (z={z:.2f}, "
+                        f"bad_evals={bad_evals}/{config.self_play_rollback_patience})"
+                    )
                     if bad_evals >= config.self_play_rollback_patience:
+                        pbar.write(
+                            f"[iter {it + 1}] rolling back to best "
+                            f"(elo {elo_state['best_elo']:.0f}) and resetting RL buffer"
+                        )
                         model.load_state_dict(elo_state["best_state"])
                         scheduler.load_state_dict(elo_state["best_scheduler_state"])
                         opt.state.clear()
@@ -358,6 +371,7 @@ if __name__ == "__main__":
         build_scheduler,
         default_checkpoint_path,
         get_device,
+        set_optimizer_lr,
     )
     from model import save_checkpoint
     from replay_buffer import DualRingBuffer
@@ -371,7 +385,7 @@ if __name__ == "__main__":
         else "Starting self-play from a randomly initialized model"
     )
     model, train_model = build_model(config, device, checkpoint_path)
-    opt = build_optimizer(model, config)
+    opt = set_optimizer_lr(build_optimizer(model, config), config.self_play_lr)
     scaler = build_scaler(device)
     scheduler = build_scheduler(
         opt, config.self_play_iterations * config.self_play_gradient_steps
