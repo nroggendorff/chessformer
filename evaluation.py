@@ -1,5 +1,6 @@
 import atexit
 import concurrent.futures
+import contextlib
 import math
 import multiprocessing as mp
 
@@ -128,113 +129,106 @@ def eval_worker_timeout_score(fen, mover_is_white, depth=10):
     return 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
 
 
-def play_anchor_games_parallel(
-    executor, model, device, config, num_games, max_moves, movetime
-):
-    boards = [chess.Board() for _ in range(num_games)]
-    model_is_white = [i % 2 == 0 for i in range(num_games)]
-    finished = [False] * num_games
-    plies = [0] * num_games
-
-    for _ in range(max_moves):
-        active = [i for i in range(num_games) if not finished[i]]
-        if not active:
-            break
-
-        learner_idx = [
-            i
-            for i in active
-            if boards[i].turn == (chess.WHITE if model_is_white[i] else chess.BLACK)
-        ]
-        engine_idx = [i for i in active if i not in learner_idx]
-
-        if learner_idx:
-            moves, _ = mcts_policy_step(
-                [boards[i] for i in learner_idx],
-                model,
-                device,
-                num_simulations=config.inference_mcts_simulations,
-                sims_per_wave=config.mcts_sims_per_wave,
-                c_puct=config.mcts_c_puct,
-                temperature=0.0,
-            )
-            assert len(moves) == len(learner_idx)
-            for i, move in zip(learner_idx, moves):
-                boards[i].push(move)
-                plies[i] += 1
-                if boards[i].is_game_over(claim_draw=True):
-                    finished[i] = True
-
-        if engine_idx:
-            futures = {
-                i: executor.submit(eval_worker_play_move, boards[i].fen(), movetime)
-                for i in engine_idx
-            }
-            for i, future in futures.items():
-                boards[i].push_uci(future.result())
-                plies[i] += 1
-                if boards[i].is_game_over(claim_draw=True):
-                    finished[i] = True
-
-    outcomes = [board.outcome(claim_draw=True) for board in boards]
-    timeout_futures = {
-        i: executor.submit(
-            eval_worker_timeout_score, boards[i].fen(), model_is_white[i]
-        )
-        for i, outcome in enumerate(outcomes)
-        if outcome is None
-    }
-
-    results = []
-    for i, outcome in enumerate(outcomes):
-        mover = chess.WHITE if model_is_white[i] else chess.BLACK
-        if outcome is None:
-            results.append(
-                {
-                    "score": timeout_futures[i].result(),
-                    "plies": plies[i],
-                    "timed_out": True,
-                }
-            )
-        else:
-            score = 0.5 if outcome.winner is None else float(outcome.winner == mover)
-            results.append({"score": score, "plies": plies[i], "timed_out": False})
-    return results
-
-
-def play_anchor_games(
+def play_all_anchor_games(
     engine_path,
     model,
     device,
     config,
-    anchor,
-    num_games,
+    anchors,
+    games_per_anchor,
     max_moves,
     movetime,
     max_workers,
 ):
     with chess.engine.SimpleEngine.popen_uci(engine_path) as probe_engine:
-        elo = clamp_uci_elo(probe_engine, anchor)
+        elos = [clamp_uci_elo(probe_engine, anchor) for anchor in anchors]
 
     ctx = mp.get_context("spawn")
-    cpu_counter, cpu_lock = ctx.Value("i", 0), ctx.Lock()
+    total_games = games_per_anchor * len(elos)
+    boards = [chess.Board() for _ in range(total_games)]
+    model_is_white = [i % 2 == 0 for i in range(total_games)]
+    anchor_of_game = [i // games_per_anchor for i in range(total_games)]
+    finished = [False] * total_games
+    plies = [0] * total_games
 
     model.eval()
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=min(max_workers, num_games),
-        mp_context=ctx,
-        initializer=eval_worker_init,
-        initargs=(engine_path, elo, cpu_counter, cpu_lock),
-    ) as executor:
-        results = play_anchor_games_parallel(
-            executor, model, device, config, num_games, max_moves, movetime
-        )
+    with contextlib.ExitStack() as stack:
+        pools = [
+            stack.enter_context(
+                concurrent.futures.ProcessPoolExecutor(
+                    max_workers=min(max(1, max_workers // len(elos)), games_per_anchor),
+                    mp_context=ctx,
+                    initializer=eval_worker_init,
+                    initargs=(engine_path, elo, ctx.Value("i", 0), ctx.Lock()),
+                )
+            )
+            for elo in elos
+        ]
 
-    return {
-        "score": sum(r["score"] for r in results),
-        "games": num_games,
-        "level": {"elo": elo},
-    }
+        for _ in range(max_moves):
+            active = [i for i in range(total_games) if not finished[i]]
+            if not active:
+                break
+
+            learner_idx = [
+                i
+                for i in active
+                if boards[i].turn == (chess.WHITE if model_is_white[i] else chess.BLACK)
+            ]
+            engine_idx = [i for i in active if i not in learner_idx]
+
+            if learner_idx:
+                moves, _ = mcts_policy_step(
+                    [boards[i] for i in learner_idx],
+                    model,
+                    device,
+                    num_simulations=config.inference_mcts_simulations,
+                    sims_per_wave=config.mcts_sims_per_wave,
+                    c_puct=config.mcts_c_puct,
+                    temperature=0.0,
+                )
+                for i, move in zip(learner_idx, moves):
+                    boards[i].push(move)
+                    plies[i] += 1
+                    if boards[i].is_game_over(claim_draw=True):
+                        finished[i] = True
+
+            if engine_idx:
+                futures = {
+                    i: pools[anchor_of_game[i]].submit(
+                        eval_worker_play_move, boards[i].fen(), movetime
+                    )
+                    for i in engine_idx
+                }
+                for i, future in futures.items():
+                    boards[i].push_uci(future.result())
+                    plies[i] += 1
+                    if boards[i].is_game_over(claim_draw=True):
+                        finished[i] = True
+
+        outcomes = [board.outcome(claim_draw=True) for board in boards]
+        timeout_futures = {
+            i: pools[anchor_of_game[i]].submit(
+                eval_worker_timeout_score, boards[i].fen(), model_is_white[i]
+            )
+            for i, outcome in enumerate(outcomes)
+            if outcome is None
+        }
+
+        results = [
+            {"score": 0.0, "games": games_per_anchor, "level": {"elo": elo}}
+            for elo in elos
+        ]
+        for i, outcome in enumerate(outcomes):
+            mover = chess.WHITE if model_is_white[i] else chess.BLACK
+            score = (
+                timeout_futures[i].result()
+                if outcome is None
+                else (0.5 if outcome.winner is None else float(outcome.winner == mover))
+            )
+            results[anchor_of_game[i]]["score"] += score
+
+    return results
 
 
 def estimate_elo(model, device, config, state):
@@ -242,20 +236,17 @@ def estimate_elo(model, device, config, state):
     anchors = [config.elo_eval_anchor + spread for spread in ELO_EVAL_ANCHOR_SPREAD]
     games_per_anchor = max(2, config.elo_eval_games // len(anchors))
 
-    results = [
-        play_anchor_games(
-            config.stockfish_path,
-            model,
-            device,
-            config,
-            anchor,
-            games_per_anchor,
-            config.elo_eval_max_moves,
-            config.elo_eval_movetime,
-            config.max_workers,
-        )
-        for anchor in anchors
-    ]
+    results = play_all_anchor_games(
+        config.stockfish_path,
+        model,
+        device,
+        config,
+        anchors,
+        games_per_anchor,
+        config.elo_eval_max_moves,
+        config.elo_eval_movetime,
+        config.max_workers,
+    )
 
     elo = fit_rating(results)
     se = rating_standard_error(elo, results)
