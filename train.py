@@ -10,6 +10,7 @@ from config import (
     build_scheduler,
     default_checkpoint_path,
     get_device,
+    set_optimizer_lr,
 )
 from dataset import DEFAULT_PATH, generate_pretrain_dataset, load_pretrain_dataset
 from model import save_checkpoint
@@ -44,26 +45,36 @@ def main():
         f"Training for {pretrain_steps} steps "
         f"({config.pretrain_epochs} epochs over {len(replay.pretrain_buf)} examples)"
     )
-    scheduler = build_scheduler(
-        opt,
-        pretrain_steps + config.self_play_iterations * config.self_play_gradient_steps,
-    )
 
     elo_state = {}
+    pretrain_scheduler = build_scheduler(opt, pretrain_steps)
     run_pretraining(
         model,
         train_model,
         opt,
         scaler,
-        scheduler,
+        pretrain_scheduler,
         replay,
         device,
         config,
         elo_state,
         pretrain_steps,
     )
+
+    set_optimizer_lr(opt, config.self_play_lr)
+    self_play_scheduler = build_scheduler(
+        opt, config.self_play_iterations * config.self_play_gradient_steps
+    )
     run_self_play(
-        model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
+        model,
+        train_model,
+        opt,
+        scaler,
+        self_play_scheduler,
+        replay,
+        device,
+        config,
+        elo_state,
     )
 
     save_checkpoint(model, default_checkpoint_path())

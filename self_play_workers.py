@@ -111,6 +111,8 @@ def worker_play_games(
     root_noise_frac,
     device_type,
     opponent_state_dict=None,
+    resign_threshold=None,
+    resign_streak=2,
 ):
     global _GLOBAL_MODEL
     assert _GLOBAL_MODEL
@@ -144,4 +146,6 @@ def worker_play_games(
         dirichlet_alpha=dirichlet_alpha,
         root_noise_frac=root_noise_frac,
         opponent_model=opponent,
+        resign_threshold=resign_threshold,
+        resign_streak=resign_streak,
     )

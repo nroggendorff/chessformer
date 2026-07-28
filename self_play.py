@@ -100,6 +100,8 @@ def generate_self_play_data(
                 dirichlet_alpha=config.mcts_dirichlet_alpha,
                 root_noise_frac=config.mcts_root_noise_frac,
                 opponent_model=opponent_model,
+                resign_threshold=config.self_play_resign_threshold,
+                resign_streak=config.self_play_resign_streak,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -131,6 +133,8 @@ def generate_self_play_data(
                 config.mcts_root_noise_frac,
                 "cpu",
                 opponent_state_dict,
+                config.self_play_resign_threshold,
+                config.self_play_resign_streak,
             )
             for i, count in enumerate(counts)
         ]
@@ -298,7 +302,6 @@ def run_self_play(
                         scheduler.load_state_dict(elo_state["best_scheduler_state"])
                         opt.state.clear()
                         elo_state["elo_ema"] = elo_state["best_elo"]
-                        replay.reset_rl()
                         bad_evals = 0
                 else:
                     bad_evals = 0

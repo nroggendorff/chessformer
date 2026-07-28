@@ -4,11 +4,16 @@ import chess
 import numpy as np
 
 from encoding import board_to_input, legal_moves_by_square_pair
-from tree_search import choose_move, run_mcts, visit_policy_pairs
+from tree_search import MCTSNode, choose_move, run_mcts, visit_policy_pairs
 
 
-def game_over(board, ply, draw_check_interval=4):
-    return board.outcome(claim_draw=ply % draw_check_interval == 0) is not None
+def _advance_root(root, move, board):
+    child = root.children.get(move)
+    if child is None:
+        return MCTSNode(board.copy())
+    child.ensure_board()
+    child.parent = None
+    return child
 
 
 def play_games_batched(
@@ -28,16 +33,22 @@ def play_games_batched(
     dirichlet_alpha=0.3,
     root_noise_frac=0.25,
     opponent_model=None,
+    resign_threshold=None,
+    resign_streak=2,
 ):
     model.eval()
     if opponent_model is not None:
         opponent_model.eval()
+
     boards = [chess.Board() for _ in range(num_games)]
+    roots = [MCTSNode(board.copy()) for board in boards]
     learner_color = [
         chess.WHITE if random.random() < 0.5 else chess.BLACK for _ in range(num_games)
     ]
     trajectories: list[list[dict]] = [[] for _ in range(num_games)]
     finished = [False] * num_games
+    adjudicated_winner = [None] * num_games
+    losing_streak = [[0, 0] for _ in range(num_games)]
 
     for ply in range(max_moves):
         active = [i for i, f in enumerate(finished) if not f]
@@ -52,81 +63,90 @@ def play_games_batched(
         opponent_idx = [i for i in active if i not in learner_idx]
         temperature_now = temperature if ply < sample_moves else temperature_floor
 
-        if learner_idx:
-            roots = run_mcts(
-                [boards[i] for i in learner_idx],
-                model,
+        for indices, search_model, sims, noise, record, temp in (
+            (learner_idx, model, mcts_simulations, True, True, temperature_now),
+            (
+                opponent_idx,
+                opponent_model,
+                opponent_mcts_simulations,
+                False,
+                False,
+                temperature_floor,
+            ),
+        ):
+            if not indices:
+                continue
+            run_mcts(
+                [roots[i] for i in indices],
+                search_model,
                 device,
-                num_simulations=mcts_simulations,
+                num_simulations=sims,
                 sims_per_wave=sims_per_wave,
                 target_batch_size=target_batch_size,
                 c_puct=c_puct,
-                add_root_noise=True,
+                add_root_noise=noise,
                 root_dirichlet_alpha=dirichlet_alpha,
                 root_noise_frac=root_noise_frac,
             )
-            for original_i, root in zip(learner_idx, roots):
-                board = boards[original_i]
-                move = choose_move(root, temperature_now)
+            for i in indices:
+                board, root = boards[i], roots[i]
+                move = choose_move(root, temp)
                 if move is None:
-                    finished[original_i] = True
+                    finished[i] = True
                     continue
-                policy_pairs = visit_policy_pairs(root)
-                trajectories[original_i].append(
-                    {
-                        "board_input": board_to_input(board),
-                        "legal_pairs": np.array(
-                            list(
-                                legal_moves_by_square_pair(
-                                    board, legal_moves=root.legal_moves
-                                ).keys()
-                            ),
-                            dtype=np.uint8,
-                        ),
-                        "policy_pairs": np.array(
-                            list(policy_pairs.keys()), dtype=np.uint8
-                        ).reshape(-1, 2),
-                        "policy_probs": np.array(
-                            list(policy_pairs.values()), dtype=np.float32
-                        ),
-                        "turn": board.turn,
-                    }
-                )
-                board.push(move)
-                if game_over(board, ply):
-                    finished[original_i] = True
 
-        if opponent_idx:
-            roots = run_mcts(
-                [boards[i] for i in opponent_idx],
-                opponent_model,
-                device,
-                num_simulations=opponent_mcts_simulations,
-                sims_per_wave=sims_per_wave,
-                target_batch_size=target_batch_size,
-                c_puct=c_puct,
-                add_root_noise=False,
-            )
-            for original_i, root in zip(opponent_idx, roots):
-                board = boards[original_i]
-                move = choose_move(root, temperature_floor)
-                if move is None:
-                    finished[original_i] = True
-                    continue
+                if record:
+                    policy_pairs = visit_policy_pairs(root)
+                    trajectories[i].append(
+                        {
+                            "board_input": board_to_input(board),
+                            "legal_pairs": np.array(
+                                list(
+                                    legal_moves_by_square_pair(
+                                        board, legal_moves=root.legal_moves
+                                    ).keys()
+                                ),
+                                dtype=np.uint8,
+                            ),
+                            "policy_pairs": np.array(
+                                list(policy_pairs.keys()), dtype=np.uint8
+                            ).reshape(-1, 2),
+                            "policy_probs": np.array(
+                                list(policy_pairs.values()), dtype=np.float32
+                            ),
+                            "turn": board.turn,
+                        }
+                    )
+
+                if resign_threshold is not None and root.visit_count > 0:
+                    q = -root.value_sum / root.visit_count
+                    streaks = losing_streak[i]
+                    streaks[board.turn] = (
+                        streaks[board.turn] + 1 if q < -resign_threshold else 0
+                    )
+                    if streaks[board.turn] >= resign_streak:
+                        adjudicated_winner[i] = not board.turn
+                        finished[i] = True
+                        continue
+
                 board.push(move)
-                if game_over(board, ply):
-                    finished[original_i] = True
+                roots[i] = _advance_root(root, move, board)
+                if board.outcome(claim_draw=True) is not None:
+                    finished[i] = True
 
     samples, decisive, drawn = [], 0, 0
-    for board, trajectory, is_finished in zip(boards, trajectories, finished):
-        winner = board.outcome(claim_draw=True).winner if is_finished else None
-        if is_finished:
+    for i in range(num_games):
+        board, trajectory = boards[i], trajectories[i]
+        outcome = board.outcome(claim_draw=True)
+        winner = outcome.winner if outcome is not None else adjudicated_winner[i]
+        resolved = outcome is not None or adjudicated_winner[i] is not None
+        if resolved:
             drawn += winner is None
             decisive += winner is not None
         if not trajectory:
             continue
         policy_weight = decisive_weight if winner is not None else 1.0
-        value_weight = policy_weight if is_finished else 0.0
+        value_weight = policy_weight if resolved else 0.0
         for step in trajectory:
             value_target = (
                 0.0

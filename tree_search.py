@@ -149,7 +149,7 @@ def _evaluate_boards(boards, model, device):
 
 
 def run_mcts(
-    boards,
+    roots,
     model,
     device,
     num_simulations=200,
@@ -160,15 +160,18 @@ def run_mcts(
     root_noise_frac=0.25,
     target_batch_size=None,
 ):
-    roots = [MCTSNode(board.copy()) for board in boards]
-
-    live_roots = [root for root in roots if terminal_value(root.board) is None]
-    if live_roots:
+    live_roots = [
+        root
+        for root in roots
+        if not root.terminal and terminal_value(root.ensure_board()) is None
+    ]
+    fresh_roots = [root for root in live_roots if not root.expanded]
+    if fresh_roots:
         heatmaps, _, piece_squares, piece_masks, legal_moves = _evaluate_boards(
-            [root.board for root in live_roots], model, device
+            [root.board for root in fresh_roots], model, device
         )
         for root, hm_row, ps_row, pm_row, lm in zip(
-            live_roots, heatmaps, piece_squares, piece_masks, legal_moves
+            fresh_roots, heatmaps, piece_squares, piece_masks, legal_moves
         ):
             root.legal_moves = lm
             expand_node(root, hm_row, ps_row, pm_row)
@@ -265,7 +268,7 @@ def mcts_policy_step(
     root_noise_frac=0.25,
 ):
     roots = run_mcts(
-        boards,
+        [MCTSNode(board.copy()) for board in boards],
         model,
         device,
         num_simulations=num_simulations,

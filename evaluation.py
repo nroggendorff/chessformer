@@ -139,6 +139,8 @@ def play_all_anchor_games(
     max_moves,
     movetime,
     max_workers,
+    mcts_simulations=None,
+    random_opening_plies=0,
 ):
     with chess.engine.SimpleEngine.popen_uci(engine_path) as probe_engine:
         elos = [clamp_uci_elo(probe_engine, anchor) for anchor in anchors]
@@ -178,20 +180,29 @@ def play_all_anchor_games(
             engine_idx = [i for i in active if i not in learner_idx]
 
             if learner_idx:
-                moves, _ = mcts_policy_step(
-                    [boards[i] for i in learner_idx],
-                    model,
-                    device,
-                    num_simulations=config.inference_mcts_simulations,
-                    sims_per_wave=config.mcts_sims_per_wave,
-                    c_puct=config.mcts_c_puct,
-                    temperature=0.0,
-                )
-                for i, move in zip(learner_idx, moves):
-                    boards[i].push(move)
-                    plies[i] += 1
-                    if boards[i].is_game_over(claim_draw=True):
-                        finished[i] = True
+                warm = [i for i in learner_idx if plies[i] < random_opening_plies]
+                warm_set = set(warm)
+                for subset, temp in (
+                    (warm, 1.0),
+                    ([i for i in learner_idx if i not in warm_set], 0.0),
+                ):
+                    if not subset:
+                        continue
+                    moves, _ = mcts_policy_step(
+                        [boards[i] for i in subset],
+                        model,
+                        device,
+                        num_simulations=mcts_simulations
+                        or config.inference_mcts_simulations,
+                        sims_per_wave=config.mcts_sims_per_wave,
+                        c_puct=config.mcts_c_puct,
+                        temperature=temp,
+                    )
+                    for i, move in zip(subset, moves):
+                        boards[i].push(move)
+                        plies[i] += 1
+                        if boards[i].is_game_over(claim_draw=True):
+                            finished[i] = True
 
             if engine_idx:
                 futures = {
@@ -246,6 +257,8 @@ def estimate_elo(model, device, config, state):
         config.elo_eval_max_moves,
         config.elo_eval_movetime,
         config.max_workers,
+        mcts_simulations=config.elo_eval_mcts_simulations,
+        random_opening_plies=config.elo_eval_random_plies,
     )
 
     elo = fit_rating(results)
