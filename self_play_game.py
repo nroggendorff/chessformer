@@ -29,6 +29,7 @@ def play_games_batched(
     opponent_mcts_simulations=100,
     sims_per_wave=8,
     target_batch_size=None,
+    max_batch_size=None,
     c_puct=1.5,
     dirichlet_alpha=0.3,
     root_noise_frac=0.25,
@@ -83,6 +84,7 @@ def play_games_batched(
                 num_simulations=sims,
                 sims_per_wave=sims_per_wave,
                 target_batch_size=target_batch_size,
+                max_batch_size=max_batch_size,
                 c_puct=c_puct,
                 add_root_noise=noise,
                 root_dirichlet_alpha=dirichlet_alpha,
@@ -130,7 +132,11 @@ def play_games_batched(
                         continue
 
                 board.push(move)
-                roots[i] = _advance_root(root, move, board)
+                roots[i] = (
+                    _advance_root(root, move, board)
+                    if opponent_model is None
+                    else MCTSNode(board.copy())
+                )
                 if board.outcome(claim_draw=True) is not None:
                     finished[i] = True
 

@@ -45,7 +45,7 @@ def fit_rating(calibrated_results, lo=-3000.0, hi=4000.0, iters=80):
     return (lo + hi) / 2
 
 
-def rating_standard_error(rating, calibrated_results):
+def rating_standard_error(rating, calibrated_results, max_se=600.0):
     if not rating or not calibrated_results:
         return None
 
@@ -55,11 +55,9 @@ def rating_standard_error(rating, calibrated_results):
         * (1 - expected_score(rating, r["level"]["elo"]))
         for r in calibrated_results
     )
-    return (
-        400 / (math.log(10) * math.sqrt(information))
-        if information > 0
-        else float("inf")
-    )
+    if information <= 0:
+        return max_se
+    return min(max_se, 400 / (math.log(10) * math.sqrt(information)))
 
 
 def play_eval_game(engine, model, device, config, model_is_white, max_moves, limit):

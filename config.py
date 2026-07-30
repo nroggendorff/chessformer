@@ -115,7 +115,7 @@ class Config:
     self_play_lr: float = 2e-5
     self_play_promote_z: float = 1.0
     self_play_rollback_z: float = 2.0
-    self_play_rollback_patience: int = 2
+    self_play_rollback_patience: int = 1
     self_play_resign_threshold: float = 0.95
     self_play_resign_streak: int = 2
     self_play_pool_size: int = 8
@@ -132,6 +132,7 @@ class Config:
     inference_mcts_simulations: int = 400
     mcts_sims_per_wave: int = 8
     mcts_target_batch_size: int = 8192
+    mcts_max_batch_size: int = 1024
     mcts_c_puct: float = 1.5
     mcts_dirichlet_alpha: float = 0.3
     mcts_root_noise_frac: float = 0.25

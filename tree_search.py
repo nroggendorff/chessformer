@@ -148,6 +148,28 @@ def _evaluate_boards(boards, model, device):
     )
 
 
+def _evaluate_boards_capped(boards, model, device, max_batch_size=None):
+    if not max_batch_size or len(boards) <= max_batch_size:
+        return _evaluate_boards(boards, model, device)
+
+    heatmaps, values, piece_squares, piece_masks, legal_moves = [], [], [], [], []
+    for start in range(0, len(boards), max_batch_size):
+        chunk = boards[start : start + max_batch_size]
+        hm, v, ps, pm, lm = _evaluate_boards(chunk, model, device)
+        heatmaps.append(hm)
+        values.extend(v)
+        piece_squares.append(ps)
+        piece_masks.append(pm)
+        legal_moves.extend(lm)
+    return (
+        np.concatenate(heatmaps),
+        values,
+        np.concatenate(piece_squares),
+        np.concatenate(piece_masks),
+        legal_moves,
+    )
+
+
 def run_mcts(
     roots,
     model,
@@ -159,6 +181,7 @@ def run_mcts(
     root_dirichlet_alpha=0.3,
     root_noise_frac=0.25,
     target_batch_size=None,
+    max_batch_size=None,
 ):
     live_roots = [
         root
@@ -167,8 +190,8 @@ def run_mcts(
     ]
     fresh_roots = [root for root in live_roots if not root.expanded]
     if fresh_roots:
-        heatmaps, _, piece_squares, piece_masks, legal_moves = _evaluate_boards(
-            [root.board for root in fresh_roots], model, device
+        heatmaps, _, piece_squares, piece_masks, legal_moves = _evaluate_boards_capped(
+            [root.board for root in fresh_roots], model, device, max_batch_size
         )
         for root, hm_row, ps_row, pm_row, lm in zip(
             fresh_roots, heatmaps, piece_squares, piece_masks, legal_moves
@@ -213,7 +236,9 @@ def run_mcts(
 
         if pending:
             heatmaps, values, piece_squares, piece_masks, legal_moves = (
-                _evaluate_boards([leaf.board for leaf in pending], model, device)
+                _evaluate_boards_capped(
+                    [leaf.board for leaf in pending], model, device, max_batch_size
+                )
             )
             leaf_values = {}
             for leaf, hm_row, ps_row, pm_row, lm, v in zip(

@@ -96,6 +96,7 @@ def generate_self_play_data(
                 opponent_mcts_simulations=config.self_play_opponent_mcts_simulations,
                 sims_per_wave=config.mcts_sims_per_wave,
                 target_batch_size=config.mcts_target_batch_size,
+                max_batch_size=config.mcts_max_batch_size,
                 c_puct=config.mcts_c_puct,
                 dirichlet_alpha=config.mcts_dirichlet_alpha,
                 root_noise_frac=config.mcts_root_noise_frac,
@@ -128,6 +129,7 @@ def generate_self_play_data(
                 config.self_play_opponent_mcts_simulations,
                 config.mcts_sims_per_wave,
                 config.mcts_target_batch_size,
+                config.mcts_max_batch_size,
                 config.mcts_c_puct,
                 config.mcts_dirichlet_alpha,
                 config.mcts_root_noise_frac,
@@ -296,7 +298,7 @@ def run_self_play(
                     if bad_evals >= config.self_play_rollback_patience:
                         pbar.write(
                             f"[iter {it + 1}] rolling back to best "
-                            f"(elo {elo_state['best_elo']:.0f}) and resetting RL buffer"
+                            f"(elo {elo_state['best_elo']:.0f})"
                         )
                         model.load_state_dict(elo_state["best_state"])
                         scheduler.load_state_dict(elo_state["best_scheduler_state"])
