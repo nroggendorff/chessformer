@@ -103,7 +103,7 @@ class Config:
     pretrain_sample_stability: int = 2
     pretrain_sample_score_margin: int = 25
 
-    self_play_iterations: int = 400
+    self_play_iterations: int = 100
     self_play_games_per_iter: int = 128
     self_play_temperature: float = 1.0
     self_play_temperature_floor: float = 0.1
@@ -152,7 +152,7 @@ class Config:
     lr: float = 4e-4
     weight_decay: float = 1e-2
 
-    d_model: int = 64
+    d_model: int = 128
     nhead: int = 4
     enc_layers: int = 6
     heatmap_hidden: int = 32
