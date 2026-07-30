@@ -149,7 +149,7 @@ class Config:
     pretrain_capacity: int = 55360000
     rl_capacity: int = 200000
 
-    lr: float = 4e-4
+    lr: float = 2e-3
     weight_decay: float = 1e-2
 
     d_model: int = 128
