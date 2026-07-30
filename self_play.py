@@ -210,7 +210,6 @@ def run_self_play(
         elo_state["best_state"] = {
             k: v.cpu().clone() for k, v in model.state_dict().items()
         }
-        elo_state["best_scheduler_state"] = scheduler.state_dict()
         elo_state["best_elo"] = elo_state["elo_ema"]
         elo_state["best_se"] = elo_state.get("last_se")
 
@@ -285,7 +284,6 @@ def run_self_play(
                     elo_state["best_state"] = {
                         k: v.cpu().clone() for k, v in model.state_dict().items()
                     }
-                    elo_state["best_scheduler_state"] = scheduler.state_dict()
                     add_to_pool(pool, model, config.self_play_pool_size)
                     bad_evals = 0
                 elif z < -config.self_play_rollback_z:
@@ -301,7 +299,6 @@ def run_self_play(
                             f"(elo {elo_state['best_elo']:.0f})"
                         )
                         model.load_state_dict(elo_state["best_state"])
-                        scheduler.load_state_dict(elo_state["best_scheduler_state"])
                         opt.state.clear()
                         elo_state["elo_ema"] = elo_state["best_elo"]
                         bad_evals = 0

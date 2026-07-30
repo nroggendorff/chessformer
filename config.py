@@ -115,7 +115,7 @@ class Config:
     self_play_lr: float = 2e-5
     self_play_promote_z: float = 1.0
     self_play_rollback_z: float = 2.0
-    self_play_rollback_patience: int = 1
+    self_play_rollback_patience: int = 3
     self_play_resign_threshold: float = 0.95
     self_play_resign_streak: int = 2
     self_play_pool_size: int = 8
@@ -138,7 +138,7 @@ class Config:
     mcts_root_noise_frac: float = 0.25
 
     elo_eval_count: int = 2
-    elo_eval_games: int = 36
+    elo_eval_games: int = 60
     elo_eval_mcts_simulations: int = 128
     elo_eval_random_plies: int = 8
     elo_eval_anchor: int = 1550
