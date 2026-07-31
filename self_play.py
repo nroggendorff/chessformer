@@ -156,7 +156,6 @@ def generate_self_play_data(
             config.nhead,
             config.enc_layers,
             config.heatmap_hidden,
-            config.attn_type_rank,
         ),
         max_tasks_per_child=config.self_play_worker_max_tasks,
     ) as fresh_executor:
@@ -197,7 +196,6 @@ def run_self_play(
                 config.nhead,
                 config.enc_layers,
                 config.heatmap_hidden,
-                config.attn_type_rank,
             ),
             max_tasks_per_child=config.self_play_worker_max_tasks,
         )
@@ -220,7 +218,6 @@ def run_self_play(
             nhead=config.nhead,
             enc_layers=config.enc_layers,
             heatmap_hidden=config.heatmap_hidden,
-            attn_rank=config.attn_type_rank,
         ).to(device)
         opponent_model.eval()
         for p in opponent_model.parameters():

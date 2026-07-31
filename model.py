@@ -4,11 +4,59 @@ import torch
 import torch.nn as nn
 from safetensors.torch import load_file, save_file
 
-from encoding import BOARD_SQUARES, NUM_PIECE_TOKENS, SEQ_LEN, VOCAB_SIZE
-from piece_attention import PieceAwareEncoder, kv_color_ids, query_type_ids
+from encoding import BOARD_SQUARES, SEQ_LEN, VOCAB_SIZE
 
-META_KV_COLOR = 3
 MAX_PIECES = 16
+NUM_RELATIONS = 15 * 15 + 1
+REL_BIAS_SCALE = 4.0
+
+
+def relative_position_ids():
+    ranks, files = torch.arange(BOARD_SQUARES) // 8, torch.arange(BOARD_SQUARES) % 8
+    board_ids = (ranks[:, None] - ranks[None, :] + 7) * 15 + (
+        files[:, None] - files[None, :] + 7
+    )
+    ids = torch.full((SEQ_LEN, SEQ_LEN), NUM_RELATIONS - 1, dtype=torch.long)
+    ids[:BOARD_SQUARES, :BOARD_SQUARES] = board_ids
+    return ids
+
+
+class RelativeTransformerEncoder(nn.Module):
+    rel_ids: torch.Tensor
+
+    def __init__(self, d_model, nhead, dim_feedforward, num_layers):
+        super().__init__()
+        self.nhead = nhead
+        self.layers = nn.ModuleList(
+            nn.TransformerEncoderLayer(
+                d_model,
+                nhead,
+                dim_feedforward,
+                dropout=0.0,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            for _ in range(num_layers)
+        )
+        self.rel_bias = nn.ParameterList(
+            nn.Parameter(torch.zeros(NUM_RELATIONS, nhead)) for _ in range(num_layers)
+        )
+        self.register_buffer("rel_ids", relative_position_ids(), persistent=False)
+
+    def forward(self, x):
+        B, N, _ = x.shape
+        for layer, bias_table in zip(self.layers, self.rel_bias):
+            bias = (REL_BIAS_SCALE * torch.tanh(bias_table[self.rel_ids])).permute(
+                2, 0, 1
+            )
+            mask = (
+                bias.unsqueeze(0)
+                .expand(B, self.nhead, N, N)
+                .reshape(B * self.nhead, N, N)
+            )
+            x = layer(x, src_mask=mask)
+        return x
 
 
 def piece_gather(board_tokens):
@@ -29,14 +77,13 @@ class ChessNet(nn.Module):
         nhead=4,
         enc_layers=2,
         heatmap_hidden=128,
-        attn_rank=32,
     ):
         super().__init__()
         self.d_model = d_model
         self.token_emb = nn.Embedding(VOCAB_SIZE, d_model)
         self.rank_emb, self.file_emb = [nn.Embedding(n, d_model) for n in (8, 8)]
-        self.encoder = PieceAwareEncoder(
-            d_model, nhead, 4 * d_model, enc_layers, attn_rank
+        self.encoder = RelativeTransformerEncoder(
+            d_model, nhead, 4 * d_model, enc_layers
         )
         self.heatmap_mlp = nn.Sequential(
             nn.Linear(d_model, heatmap_hidden),
@@ -86,19 +133,7 @@ class ChessNet(nn.Module):
             ],
             dim=1,
         )
-        query_types = torch.cat(
-            [
-                query_type_ids(board_tokens),
-                torch.full_like(meta_tokens, NUM_PIECE_TOKENS),
-            ],
-            dim=1,
-        )
-        kv_colors = torch.cat(
-            [kv_color_ids(board_tokens), torch.full_like(meta_tokens, META_KV_COLOR)],
-            dim=1,
-        )
-
-        encoded = self.encoder(seq, query_types, kv_colors)
+        encoded = self.encoder(seq)
         attn = torch.softmax(
             self.value_key(encoded) @ self.value_query / self.d_model**0.5, dim=1
         )
@@ -123,7 +158,6 @@ def load_checkpoint(path, device, config):
         nhead=config.nhead,
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
-        attn_rank=config.attn_type_rank,
     ).to(device)
     model.load_state_dict(load_file(path, device="cpu"))
     model.eval()

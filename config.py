@@ -157,7 +157,6 @@ class Config:
     nhead: int = 4
     enc_layers: int = 6
     heatmap_hidden: int = 32
-    attn_type_rank: int = 16
 
     max_workers: int | None = None
 
@@ -180,7 +179,6 @@ def build_model(config, device, checkpoint_path=None):
         nhead=config.nhead,
         enc_layers=config.enc_layers,
         heatmap_hidden=config.heatmap_hidden,
-        attn_rank=config.attn_type_rank,
     ).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(load_file(checkpoint_path, device="cpu"))

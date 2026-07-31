@@ -15,39 +15,28 @@ _GLOBAL_OPPONENT = None
 _WORKER_MODEL_ARGS = None
 
 
-def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank):
+def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
     global _GLOBAL_MODEL, _WORKER_MODEL_ARGS
     gc.set_threshold(100000, 50, 50)
     torch.set_num_threads(1)
-    _WORKER_MODEL_ARGS = (
-        device_type,
-        d_model,
-        nhead,
-        enc_layers,
-        heatmap_hidden,
-        attn_rank,
-    )
+    _WORKER_MODEL_ARGS = (device_type, d_model, nhead, enc_layers, heatmap_hidden)
     _GLOBAL_MODEL = ChessNet(
         d_model=d_model,
         nhead=nhead,
         enc_layers=enc_layers,
         heatmap_hidden=heatmap_hidden,
-        attn_rank=attn_rank,
     ).to(torch.device(device_type))
 
 
 def ensure_opponent():
     global _GLOBAL_OPPONENT
     if _GLOBAL_OPPONENT is None:
-        device_type, d_model, nhead, enc_layers, heatmap_hidden, attn_rank = (
-            _WORKER_MODEL_ARGS
-        )
+        device_type, d_model, nhead, enc_layers, heatmap_hidden = _WORKER_MODEL_ARGS
         _GLOBAL_OPPONENT = ChessNet(
             d_model=d_model,
             nhead=nhead,
             enc_layers=enc_layers,
             heatmap_hidden=heatmap_hidden,
-            attn_rank=attn_rank,
         ).to(torch.device(device_type))
     return _GLOBAL_OPPONENT
 
@@ -70,7 +59,6 @@ def calibrate_self_play_workers(config):
             config.nhead,
             config.enc_layers,
             config.heatmap_hidden,
-            config.attn_type_rank,
         ),
     ) as probe:
         worker_rss_mb = probe.submit(worker_report_rss_mb).result()
