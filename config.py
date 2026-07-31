@@ -112,11 +112,12 @@ class Config:
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 16
     self_play_decisive_weight: float = 1.5
+    self_play_timeout_value_weight: float = 0.5
     self_play_lr: float = 2e-5
-    self_play_promote_z: float = 1.0
+    self_play_promote_z: float = 1.5
     self_play_rollback_z: float = 2.0
     self_play_rollback_patience: int = 3
-    self_play_resign_threshold: float = 0.95
+    self_play_resign_threshold: float = 0.8
     self_play_resign_streak: int = 2
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.75
@@ -138,7 +139,7 @@ class Config:
     mcts_root_noise_frac: float = 0.25
 
     elo_eval_count: int = 2
-    elo_eval_games: int = 60
+    elo_eval_games: int = 90
     elo_eval_mcts_simulations: int = 128
     elo_eval_random_plies: int = 8
     elo_eval_anchor: int = 1550

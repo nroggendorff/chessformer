@@ -2,9 +2,23 @@ import random
 
 import chess
 import numpy as np
+import torch
 
 from encoding import board_to_input, legal_moves_by_square_pair
 from tree_search import MCTSNode, choose_move, run_mcts, visit_policy_pairs
+
+
+@torch.inference_mode()
+def _bootstrap_timeout_values(boards, indices, model, device):
+    if not indices:
+        return {}
+    board_inputs = torch.tensor(
+        [board_to_input(boards[i]) for i in indices],
+        dtype=torch.long,
+        device=device,
+    )
+    _, values = model(board_inputs, value_only=True)
+    return dict(zip(indices, values.float().cpu().tolist()))
 
 
 def _advance_root(root, move, board):
@@ -25,6 +39,7 @@ def play_games_batched(
     temperature=1.0,
     temperature_floor=0.1,
     decisive_weight=1.5,
+    timeout_value_weight=0.5,
     mcts_simulations=200,
     opponent_mcts_simulations=100,
     sims_per_wave=8,
@@ -140,25 +155,42 @@ def play_games_batched(
                 if board.outcome(claim_draw=True) is not None:
                     finished[i] = True
 
+    resolved_flags, winners = [], [None] * num_games
+    for i in range(num_games):
+        outcome = boards[i].outcome(claim_draw=True)
+        winners[i] = outcome.winner if outcome is not None else adjudicated_winner[i]
+        resolved_flags.append(outcome is not None or adjudicated_winner[i] is not None)
+
+    timeout_idx = [
+        i for i in range(num_games) if not resolved_flags[i] and trajectories[i]
+    ]
+    timeout_values = _bootstrap_timeout_values(boards, timeout_idx, model, device)
+
     samples, decisive, drawn = [], 0, 0
     for i in range(num_games):
-        board, trajectory = boards[i], trajectories[i]
-        outcome = board.outcome(claim_draw=True)
-        winner = outcome.winner if outcome is not None else adjudicated_winner[i]
-        resolved = outcome is not None or adjudicated_winner[i] is not None
+        board, trajectory, winner, resolved = (
+            boards[i],
+            trajectories[i],
+            winners[i],
+            resolved_flags[i],
+        )
         if resolved:
             drawn += winner is None
             decisive += winner is not None
         if not trajectory:
             continue
         policy_weight = decisive_weight if winner is not None else 1.0
-        value_weight = policy_weight if resolved else 0.0
+        value_weight = policy_weight if resolved else timeout_value_weight
+        bootstrap = timeout_values.get(i)
         for step in trajectory:
-            value_target = (
-                0.0
-                if winner is None
-                else float(1.0 if winner == step["turn"] else -1.0)
-            )
+            if resolved:
+                value_target = (
+                    0.0
+                    if winner is None
+                    else float(1.0 if winner == step["turn"] else -1.0)
+                )
+            else:
+                value_target = bootstrap if step["turn"] == board.turn else -bootstrap
             samples.append(
                 (
                     np.array(step["board_input"], dtype=np.uint8),
