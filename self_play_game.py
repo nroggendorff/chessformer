@@ -193,7 +193,7 @@ def play_games_batched(
                 value_target = bootstrap if step["turn"] == board.turn else -bootstrap
             samples.append(
                 (
-                    np.array(step["board_input"], dtype=np.uint8),
+                    np.array(step["board_input"], dtype=np.int64),
                     step["legal_pairs"],
                     step["policy_pairs"],
                     step["policy_probs"],

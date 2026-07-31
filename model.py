@@ -22,7 +22,6 @@ def piece_gather(board_tokens):
 class ChessNet(nn.Module):
     ranks: torch.Tensor
     files: torch.Tensor
-    meta_positions: torch.Tensor
 
     def __init__(
         self,
@@ -35,9 +34,7 @@ class ChessNet(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.token_emb = nn.Embedding(VOCAB_SIZE, d_model)
-        self.rank_emb, self.file_emb, self.meta_pos_emb = [
-            nn.Embedding(n, d_model) for n in (8, 8, SEQ_LEN - BOARD_SQUARES)
-        ]
+        self.rank_emb, self.file_emb = [nn.Embedding(n, d_model) for n in (8, 8)]
         self.encoder = PieceAwareEncoder(
             d_model, nhead, 4 * d_model, enc_layers, attn_rank
         )
@@ -54,15 +51,18 @@ class ChessNet(nn.Module):
             nn.GELU(),
             nn.Linear(heatmap_hidden, 1),
         )
-        self.legal_to_emb, self.last_from_emb = [
-            nn.Embedding(2, d_model) for _ in range(2)
-        ]
+        self.legal_to_mlp = nn.Sequential(
+            nn.Linear(BOARD_SQUARES, heatmap_hidden),
+            nn.GELU(),
+            nn.Linear(heatmap_hidden, d_model),
+        )
+        self.legal_from_emb = nn.Linear(BOARD_SQUARES, d_model)
         self.register_buffer(
             "ranks", torch.arange(BOARD_SQUARES) // 8, persistent=False
         )
         self.register_buffer("files", torch.arange(BOARD_SQUARES) % 8, persistent=False)
         self.register_buffer(
-            "meta_positions", torch.arange(SEQ_LEN - BOARD_SQUARES), persistent=False
+            "bit_positions", torch.arange(BOARD_SQUARES), persistent=False
         )
 
     def forward(self, board_input, value_only=False):
@@ -71,17 +71,18 @@ class ChessNet(nn.Module):
             board_input[:, :BOARD_SQUARES],
             board_input[:, BOARD_SQUARES:SEQ_LEN],
         )
+        legal_to_bits = board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES]
+        legal_from = board_input[:, SEQ_LEN + BOARD_SQUARES :].float()
+        legal_to = ((legal_to_bits.unsqueeze(-1) >> self.bit_positions) & 1).float()
+        legal_from_embed = self.legal_from_emb(legal_from).unsqueeze(1)
         seq = torch.cat(
             [
                 self.token_emb(board_tokens)
                 + self.rank_emb(self.ranks.expand(B, BOARD_SQUARES))
                 + self.file_emb(self.files.expand(B, BOARD_SQUARES))
-                + self.legal_to_emb(board_input[:, SEQ_LEN : SEQ_LEN + BOARD_SQUARES])
-                + self.last_from_emb(board_input[:, SEQ_LEN + BOARD_SQUARES :]),
-                self.token_emb(meta_tokens)
-                + self.meta_pos_emb(
-                    self.meta_positions.expand(B, SEQ_LEN - BOARD_SQUARES)
-                ),
+                + self.legal_to_mlp(legal_to)
+                + legal_from_embed,
+                self.token_emb(meta_tokens) + legal_from_embed,
             ],
             dim=1,
         )

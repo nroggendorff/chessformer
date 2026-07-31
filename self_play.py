@@ -28,7 +28,7 @@ def warmup_train_model(model, train_model, opt, scaler, config, device):
     state = {k: v.clone() for k, v in model.state_dict().items()}
     samples = [
         (
-            np.zeros(INPUT_SIZE, dtype=np.uint8),
+            np.zeros(INPUT_SIZE, dtype=np.int64),
             np.array([[0, 1]], dtype=np.uint8),
             np.array([[0, 1]], dtype=np.uint8),
             np.array([1.0], dtype=np.float32),

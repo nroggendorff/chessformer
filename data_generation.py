@@ -197,7 +197,7 @@ def position_label(
 
     total = sum(pair_scores.values()) or 1.0
     return {
-        "board_input": np.array(board_to_input(board), dtype=np.uint8),
+        "board_input": np.array(board_to_input(board), dtype=np.int64),
         "legal_pairs": np.array(
             list(legal_moves_by_square_pair(board, legal_moves=legal_moves).keys()),
             dtype=np.uint8,

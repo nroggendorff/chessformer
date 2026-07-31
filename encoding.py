@@ -61,21 +61,19 @@ def board_to_tokens(board):
     return tokens
 
 
+def _as_int64(bitboard):
+    return bitboard - (1 << 64) if bitboard >= (1 << 63) else bitboard
+
+
 def board_to_input(board):
     last_from = [0] * BOARD_SQUARES
     if board.move_stack:
         last_from[board.peek().from_square] = 1
-    attacked = {
-        square
+    legal_to = [
+        _as_int64(int(board.attacks(origin))) if board.piece_at(origin) else 0
         for origin in chess.SQUARES
-        if board.piece_at(origin)
-        for square in board.attacks(origin)
-    }
-    return (
-        board_to_tokens(board)
-        + [int(sq in attacked) for sq in range(BOARD_SQUARES)]
-        + last_from
-    )
+    ]
+    return board_to_tokens(board) + legal_to + last_from
 
 
 def legal_moves_by_square_pair(board, legal_moves=None, include_promotions=True):

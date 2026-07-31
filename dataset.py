@@ -20,7 +20,7 @@ def dataset_to_samples(ds):
     columns = ds.to_dict()
     return [
         (
-            np.array(board_input, dtype=np.uint8),
+            np.array(board_input, dtype=np.int64),
             np.array(legal_pairs, dtype=np.uint8),
             np.array(policy_pairs, dtype=np.uint8),
             np.array(policy_probs, dtype=np.float32),
