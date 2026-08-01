@@ -360,7 +360,16 @@ def run_self_play(
             elo_state["best_se"],
         )
         if z < -config.self_play_rollback_z:
+            pbar.write(
+                f"[final] rolling back to best (elo {elo_state['best_elo']:.0f}); "
+                f"final run ended at {final_elo:.0f} (z={z:.2f})"
+            )
             model.load_state_dict(elo_state["best_state"])
+        else:
+            pbar.write(
+                f"[final] keeping current weights: elo {final_elo:.0f} "
+                f"vs best {elo_state['best_elo']:.0f} (z={z:.2f})"
+            )
 
 
 if __name__ == "__main__":

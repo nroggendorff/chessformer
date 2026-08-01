@@ -71,7 +71,7 @@ class MCTSNode:
 
 
 def terminal_value(board):
-    outcome = board.outcome(claim_draw=False)
+    outcome = board.outcome(claim_draw=True)
     if outcome is None:
         return None
     if outcome.winner is None:
