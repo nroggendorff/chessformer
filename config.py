@@ -81,7 +81,7 @@ class Config:
         default_factory=lambda: shutil.which("stockfish") or "/usr/games/stockfish"
     )
 
-    pretrain_games: int = 125000
+    pretrain_games: int = 200000
     pretrain_chunk_games: int = 20
     pretrain_max_moves: int = 120
     pretrain_sample_moves: int = 30
@@ -98,7 +98,7 @@ class Config:
     pretrain_policy_temperature: float = 0.06
     pretrain_drive_temperature: float = 0.3
     pretrain_sample_ply_ramp: int = 10
-    pretrain_max_sample_win_prob: float = 0.85
+    pretrain_max_sample_win_prob: float = 0.97
     pretrain_max_sample_entropy: float = 1.5
     pretrain_sample_stability: int = 2
     pretrain_sample_score_margin: int = 25
