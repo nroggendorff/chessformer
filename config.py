@@ -115,7 +115,7 @@ class Config:
     self_play_timeout_value_weight: float = 0.5
     self_play_lr: float = 2e-5
     self_play_promote_z: float = 1.5
-    self_play_rollback_z: float = 2.0
+    self_play_rollback_z: float = 1.5
     self_play_rollback_patience: int = 3
     self_play_resign_threshold: float = 0.8
     self_play_resign_streak: int = 2
@@ -128,8 +128,8 @@ class Config:
     self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
 
-    self_play_mcts_simulations: int = 64
-    self_play_opponent_mcts_simulations: int = 64
+    self_play_mcts_simulations: int = 128
+    self_play_opponent_mcts_simulations: int = 128
     inference_mcts_simulations: int = 400
     mcts_sims_per_wave: int = 8
     mcts_target_batch_size: int = 8192
@@ -139,7 +139,7 @@ class Config:
     mcts_root_noise_frac: float = 0.25
 
     elo_eval_count: int = 2
-    elo_eval_games: int = 90
+    elo_eval_games: int = 150
     elo_eval_mcts_simulations: int = 128
     elo_eval_random_plies: int = 8
     elo_eval_anchor: int = 1550
