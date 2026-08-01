@@ -15,7 +15,7 @@ import chess.engine
 import numpy as np
 from tqdm import tqdm
 
-from encoding import board_to_input, legal_moves_by_square_pair
+from encoding import board_to_input, canon_square, legal_moves_by_square_pair
 
 PIECE_VALUES = {
     chess.PAWN: 1,
@@ -190,9 +190,13 @@ def position_label(
 ):
     if legal_moves is None:
         legal_moves = list(board.legal_moves)
+    mover = board.turn
     pair_scores = {}
     for move, score in scores.items():
-        key = (move.from_square, move.to_square)
+        key = (
+            canon_square(move.from_square, mover),
+            canon_square(move.to_square, mover),
+        )
         pair_scores[key] = pair_scores.get(key, 0.0) + score
 
     total = sum(pair_scores.values()) or 1.0

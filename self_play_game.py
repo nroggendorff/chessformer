@@ -113,7 +113,7 @@ def play_games_batched(
                     continue
 
                 if record:
-                    policy_pairs = visit_policy_pairs(root)
+                    policy_pairs = visit_policy_pairs(root, board.turn)
                     trajectories[i].append(
                         {
                             "board_input": board_to_input(board),

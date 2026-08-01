@@ -24,6 +24,14 @@ REPETITION_BASE = 45
 STM_BASE = 48
 
 
+def canon_square(square, mover):
+    return square if mover == chess.WHITE else chess.square_mirror(square)
+
+
+def canon_bitboard(bitboard, mover):
+    return bitboard if mover == chess.WHITE else chess.flip_vertical(bitboard)
+
+
 def board_to_tokens(board):
     mover, opponent = board.turn, not board.turn
     tokens = [TOKEN_EMPTY] * BOARD_SQUARES
@@ -31,9 +39,9 @@ def board_to_tokens(board):
 
     for piece_type, attr in PIECE_BBS:
         bb = getattr(board, attr)
-        for sq in chess.scan_reversed(bb & mover_bb):
+        for sq in chess.scan_reversed(canon_bitboard(bb & mover_bb, mover)):
             tokens[sq] = piece_type
-        for sq in chess.scan_reversed(bb & opponent_bb):
+        for sq in chess.scan_reversed(canon_bitboard(bb & opponent_bb, mover)):
             tokens[sq] = piece_type + 6
 
     castling = (
@@ -66,22 +74,29 @@ def _as_int64(bitboard):
 
 
 def board_to_input(board):
+    mover = board.turn
     last_from = [0] * BOARD_SQUARES
     if board.move_stack:
-        last_from[board.peek().from_square] = 1
-    legal_to = [
-        _as_int64(int(board.attacks(origin))) if board.piece_at(origin) else 0
-        for origin in chess.SQUARES
-    ]
+        last_from[canon_square(board.peek().from_square, mover)] = 1
+    legal_to = [0] * BOARD_SQUARES
+    for origin in chess.SQUARES:
+        if board.piece_at(origin):
+            legal_to[canon_square(origin, mover)] = _as_int64(
+                canon_bitboard(int(board.attacks(origin)), mover)
+            )
     return board_to_tokens(board) + legal_to + last_from
 
 
 def legal_moves_by_square_pair(board, legal_moves=None, include_promotions=True):
+    mover = board.turn
     moves = {}
     for move in board.legal_moves if legal_moves is None else legal_moves:
         if not include_promotions and move.promotion is not None:
             continue
-        key = (move.from_square, move.to_square)
+        key = (
+            canon_square(move.from_square, mover),
+            canon_square(move.to_square, mover),
+        )
         if move.promotion in (None, chess.QUEEN):
             moves[key] = move
         else:

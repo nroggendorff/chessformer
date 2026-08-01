@@ -4,7 +4,12 @@ import weakref
 import numpy as np
 import torch
 
-from encoding import BOARD_SQUARES, board_to_input, legal_moves_by_square_pair
+from encoding import (
+    BOARD_SQUARES,
+    board_to_input,
+    canon_square,
+    legal_moves_by_square_pair,
+)
 from model import piece_gather
 from policy import resolve_promotions
 
@@ -260,10 +265,13 @@ def run_mcts(
     return roots
 
 
-def visit_policy_pairs(root):
+def visit_policy_pairs(root, mover):
     pairs = {}
     for move, prob in root.visit_distribution().items():
-        key = (move.from_square, move.to_square)
+        key = (
+            canon_square(move.from_square, mover),
+            canon_square(move.to_square, mover),
+        )
         pairs[key] = pairs.get(key, 0.0) + prob
     return pairs
 
