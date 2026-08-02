@@ -13,6 +13,14 @@ from encoding import (
 from model import piece_gather
 from policy import resolve_promotions
 
+_warned_fens = set()
+
+
+def _warn_once(message, fen):
+    if fen not in _warned_fens:
+        _warned_fens.add(fen)
+        print(message)
+
 
 class MCTSNode:
     __slots__ = (
@@ -52,7 +60,8 @@ class MCTSNode:
     def puct_score(self, c_puct, parent_visits):
         n = self.visit_count + self.virtual_loss
         q = 0.0 if n == 0 else (self.value_sum - self.virtual_loss) / n
-        return q + c_puct * self.prior * math.sqrt(parent_visits) / (1 + n)
+        score = q + c_puct * self.prior * math.sqrt(parent_visits) / (1 + n)
+        return score if math.isfinite(score) else float("-inf")
 
     def select_child(self, c_puct):
         parent_visits = max(1, self.visit_count + self.virtual_loss)
@@ -103,7 +112,16 @@ def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
     if not moves:
         return
 
-    for move, prior in zip(moves, _softmax(logits)):
+    if not all(math.isfinite(logit) for logit in logits):
+        _warn_once(
+            f"non-finite heatmap logits at fen={node.board.fen()!r}; using uniform prior",
+            node.board.fen(),
+        )
+        priors = [1.0 / len(moves)] * len(moves)
+    else:
+        priors = _softmax(logits)
+
+    for move, prior in zip(moves, priors):
         node.children[move] = MCTSNode(None, parent=node, move=move, prior=float(prior))
     node.expanded = True
 
@@ -260,6 +278,12 @@ def run_mcts(
             value = leaf_values.get(id(leaf))
             if value is None:
                 value = terminal_value(leaf.board) or 0.0
+            elif not math.isfinite(value):
+                _warn_once(
+                    f"non-finite leaf value ({value}) at fen={leaf.board.fen()!r}; using 0.0",
+                    leaf.board.fen(),
+                )
+                value = 0.0
             _backup(path, value)
 
     return roots

@@ -96,8 +96,14 @@ def train_batch(model, opt, scaler, samples, device):
         scaler.update()
     else:
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
+        total_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if torch.isfinite(total_norm):
+            opt.step()
+        else:
+            print(
+                f"skipping optimizer step: non-finite grad norm ({total_norm.item()})"
+            )
+        opt.zero_grad(set_to_none=True)
 
     return (
         loss.item(),
