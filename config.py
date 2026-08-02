@@ -120,9 +120,9 @@ class Config:
     self_play_resign_threshold: float = 0.8
     self_play_resign_streak: int = 2
     self_play_pool_size: int = 8
-    self_play_pool_self_prob: float = 0.75
+    self_play_pool_self_prob: float = 0.5
     self_play_pool_update_interval: int = 25
-    self_play_eval_count: int = 8
+    self_play_eval_count: int = 16
     self_play_max_workers: int | None = 1
     self_play_worker_max_tasks: int = 256
     self_play_chunk_games: int = 20
