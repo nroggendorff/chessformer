@@ -67,6 +67,11 @@ def train_batch(model, opt, scaler, samples, device):
 
     if not torch.isfinite(loss):
         opt.zero_grad(set_to_none=True)
+        bad = [n for n, p in model.named_parameters() if not torch.isfinite(p).all()]
+        if bad:
+            raise RuntimeError(
+                f"Non-finite weights, aborting before they get saved: {bad[:5]}"
+            )
         return float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
 
     with torch.no_grad():

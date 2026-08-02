@@ -165,5 +165,8 @@ def load_checkpoint(path, device, config):
 
 
 def save_checkpoint(model, path):
+    bad = [k for k, v in model.state_dict().items() if not torch.isfinite(v).all()]
+    if bad:
+        raise RuntimeError(f"Refusing to save non-finite tensors: {bad[:5]}")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     save_file(model.state_dict(), path)
