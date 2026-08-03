@@ -260,10 +260,12 @@ def run_self_play(
         pool = [elo_state["best_state"]]
 
         pbar = tqdm(
-            range(config.self_play_iterations), desc="Self-Play RL Optimization"
+            range(config.self_play_iterations),
+            desc="Self-Play RL Optimization",
+            smoothing=0.1,
         )
         eval_interval = max(
-            1, config.self_play_iterations // config.self_play_eval_count
+            1, round(config.self_play_iterations / config.self_play_eval_count)
         )
         pool_update_interval = min(
             config.self_play_pool_update_interval,
@@ -344,7 +346,6 @@ def run_self_play(
                         bad_evals = 0
                 else:
                     bad_evals = 0
-                pbar.unpause()
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
             )
