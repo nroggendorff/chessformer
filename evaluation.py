@@ -24,6 +24,15 @@ def expected_score(rating, opponent_rating):
     return 1 / (1 + 10 ** ((opponent_rating - rating) / 400))
 
 
+def binomial_z_score(wins, draws, games, baseline=0.5):
+    if games == 0:
+        return 0.0
+    smoothed_n = games + 2
+    smoothed_score = (wins + 0.5 * draws + 1) / smoothed_n
+    se = math.sqrt(smoothed_score * (1 - smoothed_score) / smoothed_n)
+    return ((wins + 0.5 * draws) / games - baseline) / se
+
+
 def fit_rating(calibrated_results, lo=-3000.0, hi=4000.0, iters=80):
     if not calibrated_results:
         return None

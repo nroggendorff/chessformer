@@ -1,7 +1,6 @@
 import concurrent.futures
 import contextlib
 import gc
-import math
 import multiprocessing as mp
 import os
 import random
@@ -13,7 +12,7 @@ from tqdm import tqdm
 
 from config import amp_dtype
 from encoding import INPUT_SIZE
-from evaluation import estimate_elo
+from evaluation import binomial_z_score, estimate_elo
 from model import ChessNet
 from self_play_game import play_games_batched
 from self_play_workers import (
@@ -49,15 +48,16 @@ def add_to_pool(pool, model, pool_size):
         pool.pop(0)
 
 
-def elo_z_score(candidate_elo, candidate_se, reference_elo, reference_se):
-    return (candidate_elo - reference_elo) / math.sqrt(
-        (candidate_se or float("inf")) ** 2 + (reference_se or float("inf")) ** 2
-    )
-
-
 def _collect_worker_results(futures):
     samples = []
-    stats = {"games": 0, "decisive": 0, "drawn": 0, "unresolved": 0}
+    stats = {
+        "games": 0,
+        "decisive": 0,
+        "drawn": 0,
+        "unresolved": 0,
+        "learner_wins": 0,
+        "opponent_wins": 0,
+    }
     for f in concurrent.futures.as_completed(futures):
         chunk_samples, chunk_stats = f.result()
         samples.extend(chunk_samples)
@@ -80,6 +80,7 @@ def generate_self_play_data(
     executor=None,
     opponent_model=None,
     opponent_state_dict=None,
+    add_root_noise=True,
 ):
     if not use_multiprocessing:
         with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
@@ -104,6 +105,7 @@ def generate_self_play_data(
                 opponent_model=opponent_model,
                 resign_threshold=config.self_play_resign_threshold,
                 resign_streak=config.self_play_resign_streak,
+                add_root_noise=add_root_noise,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -139,6 +141,7 @@ def generate_self_play_data(
                 opponent_state_dict,
                 config.self_play_resign_threshold,
                 config.self_play_resign_streak,
+                add_root_noise,
             )
             for i, count in enumerate(counts)
         ]
@@ -160,6 +163,39 @@ def generate_self_play_data(
         max_tasks_per_child=config.self_play_worker_max_tasks,
     ) as fresh_executor:
         return _collect_worker_results(submit(fresh_executor))
+
+
+def head_to_head_score(
+    model,
+    opponent_model,
+    opponent_state,
+    games,
+    max_moves,
+    device,
+    config,
+    use_multiprocessing,
+    max_workers=None,
+    executor=None,
+):
+    if not use_multiprocessing:
+        opponent_model.load_state_dict(opponent_state)
+    _, stats = generate_self_play_data(
+        model,
+        games,
+        max_moves,
+        0,
+        config.self_play_temperature_floor,
+        config.self_play_temperature_floor,
+        device,
+        config,
+        use_multiprocessing,
+        max_workers=max_workers,
+        executor=executor,
+        opponent_model=opponent_model,
+        opponent_state_dict=opponent_state,
+        add_root_noise=False,
+    )
+    return stats
 
 
 def run_self_play(
@@ -210,8 +246,6 @@ def run_self_play(
         elo_state["best_state"] = {
             k: v.cpu().clone() for k, v in model.state_dict().items()
         }
-        elo_state["best_elo"] = elo_state["elo_ema"]
-        elo_state["best_se"] = elo_state.get("last_se")
 
         opponent_model = ChessNet(
             d_model=config.d_model,
@@ -266,40 +300,47 @@ def run_self_play(
                 add_to_pool(pool, model, config.self_play_pool_size)
 
             if (it + 1) % eval_interval == 0:
-                _, elo_ema = estimate_elo(model, device, config, elo_state)
-                z = elo_z_score(
-                    elo_ema,
-                    elo_state["last_se"],
-                    elo_state["best_elo"],
-                    elo_state["best_se"],
+                h2h = head_to_head_score(
+                    model,
+                    opponent_model,
+                    elo_state["best_state"],
+                    config.self_play_h2h_games,
+                    config.self_play_max_moves,
+                    device,
+                    config,
+                    use_multiprocessing,
+                    max_workers=max_workers,
+                    executor=executor,
                 )
+                z = binomial_z_score(
+                    h2h["learner_wins"],
+                    h2h["drawn"],
+                    h2h["games"] - h2h["unresolved"],
+                )
+                record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
                 if z > config.self_play_promote_z:
-                    pbar.write(
-                        f"[iter {it + 1}] promoted: elo_ema {elo_ema:.0f} "
-                        f"vs best {elo_state['best_elo']:.0f} (z={z:.2f})"
-                    )
-                    elo_state["best_elo"] = elo_ema
-                    elo_state["best_se"] = elo_state["last_se"]
                     elo_state["best_state"] = {
                         k: v.cpu().clone() for k, v in model.state_dict().items()
                     }
+                    _, elo_state["elo_ema"] = estimate_elo(
+                        model, device, config, elo_state
+                    )
+                    pbar.write(
+                        f"[iter {it + 1}] promoted: scored {record} vs best "
+                        f"(z={z:.2f}, elo_ema {elo_state['elo_ema']:.0f})"
+                    )
                     add_to_pool(pool, model, config.self_play_pool_size)
                     bad_evals = 0
                 elif z < -config.self_play_rollback_z:
                     bad_evals += 1
                     pbar.write(
-                        f"[iter {it + 1}] bad eval: elo_ema {elo_ema:.0f} "
-                        f"vs best {elo_state['best_elo']:.0f} (z={z:.2f}, "
-                        f"bad_evals={bad_evals}/{config.self_play_rollback_patience})"
+                        f"[iter {it + 1}] bad eval: scored {record} vs best "
+                        f"(z={z:.2f}, bad_evals={bad_evals}/{config.self_play_rollback_patience})"
                     )
                     if bad_evals >= config.self_play_rollback_patience:
-                        pbar.write(
-                            f"[iter {it + 1}] rolling back to best "
-                            f"(elo {elo_state['best_elo']:.0f})"
-                        )
+                        pbar.write(f"[iter {it + 1}] rolling back to best")
                         model.load_state_dict(elo_state["best_state"])
                         opt.state.clear()
-                        elo_state["elo_ema"] = elo_state["best_elo"]
                         bad_evals = 0
                 else:
                     bad_evals = 0
@@ -352,24 +393,33 @@ def run_self_play(
                 torch.mps.empty_cache()
             gc.collect()
 
-        final_elo, _ = estimate_elo(model, device, config, elo_state)
-        z = elo_z_score(
-            final_elo,
-            elo_state["last_se"],
-            elo_state["best_elo"],
-            elo_state["best_se"],
+        h2h = head_to_head_score(
+            model,
+            opponent_model,
+            elo_state["best_state"],
+            config.self_play_h2h_games,
+            config.self_play_max_moves,
+            device,
+            config,
+            use_multiprocessing,
+            max_workers=max_workers,
+            executor=executor,
         )
+        z = binomial_z_score(
+            h2h["learner_wins"], h2h["drawn"], h2h["games"] - h2h["unresolved"]
+        )
+        record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
         if z < -config.self_play_rollback_z:
             pbar.write(
-                f"[final] rolling back to best (elo {elo_state['best_elo']:.0f}); "
-                f"final run ended at {final_elo:.0f} (z={z:.2f})"
+                f"[final] rolling back to best; final run scored {record} (z={z:.2f})"
             )
             model.load_state_dict(elo_state["best_state"])
         else:
             pbar.write(
-                f"[final] keeping current weights: elo {final_elo:.0f} "
-                f"vs best {elo_state['best_elo']:.0f} (z={z:.2f})"
+                f"[final] keeping current weights: scored {record} vs best (z={z:.2f})"
             )
+        final_elo, elo_state["elo_ema"] = estimate_elo(model, device, config, elo_state)
+        pbar.write(f"[final] elo estimate: {final_elo:.0f}")
 
 
 if __name__ == "__main__":

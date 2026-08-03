@@ -51,6 +51,7 @@ def play_games_batched(
     opponent_model=None,
     resign_threshold=None,
     resign_streak=2,
+    add_root_noise=True,
 ):
     model.eval()
     if opponent_model is not None:
@@ -80,7 +81,14 @@ def play_games_batched(
         temperature_now = temperature if ply < sample_moves else temperature_floor
 
         for indices, search_model, sims, noise, record, temp in (
-            (learner_idx, model, mcts_simulations, True, True, temperature_now),
+            (
+                learner_idx,
+                model,
+                mcts_simulations,
+                add_root_noise,
+                True,
+                temperature_now,
+            ),
             (
                 opponent_idx,
                 opponent_model,
@@ -208,5 +216,15 @@ def play_games_batched(
         "decisive": decisive,
         "drawn": drawn,
         "unresolved": num_games - decisive - drawn,
+        "learner_wins": sum(
+            resolved_flags[i] and winners[i] == learner_color[i]
+            for i in range(num_games)
+        ),
+        "opponent_wins": sum(
+            resolved_flags[i]
+            and winners[i] is not None
+            and winners[i] != learner_color[i]
+            for i in range(num_games)
+        ),
     }
     return samples, stats
