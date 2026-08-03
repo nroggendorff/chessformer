@@ -6,6 +6,8 @@ from safetensors.torch import load_file, save_file
 
 from encoding import BOARD_SQUARES, SEQ_LEN, VOCAB_SIZE
 
+torch.backends.mha.set_fastpath_enabled(False)
+
 MAX_PIECES = 16
 NUM_RELATIONS = 15 * 15 + 1
 REL_BIAS_SCALE = 4.0
