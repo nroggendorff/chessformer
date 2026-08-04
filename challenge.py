@@ -65,8 +65,8 @@ class LichessBot:
         try:
             challenge = self.client.challenges.create(
                 username=username,
-                rated=False,
-                clock_limit=600,
+                rated=True,
+                clock_limit=60,
                 clock_increment=0,
                 color="random",
                 variant="standard",
