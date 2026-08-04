@@ -124,6 +124,7 @@ class Config:
     self_play_resign_streak: int = 2
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.5
+    self_play_anchor_prob: float = 0.25
     self_play_pool_update_interval: int = 25
     self_play_h2h_games: int = 40
     self_play_eval_count: int = 16

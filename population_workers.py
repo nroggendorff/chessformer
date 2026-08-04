@@ -60,7 +60,7 @@ def calibrate_population_workers(device, config):
     return workers
 
 
-def worker_train_contender(state, opt_state, opponent_states, config):
+def worker_train_contender(state, opt_state, opponent_states, anchor_state, config):
     load_state(_MODEL, state)
     if opt_state is None:
         _OPT.state.clear()
@@ -69,11 +69,15 @@ def worker_train_contender(state, opt_state, opponent_states, config):
 
     losses, totals = [], {"games": 0, "decisive": 0, "drawn": 0, "unresolved": 0}
     for _ in range(config.population_generation_iters):
-        opponent_state = (
-            None
-            if not opponent_states or random.random() < config.self_play_pool_self_prob
-            else from_numpy_state(random.choice(opponent_states))
-        )
+        roll = random.random()
+        if roll < config.self_play_pool_self_prob:
+            opponent_state = None
+        elif roll < config.self_play_pool_self_prob + config.self_play_anchor_prob:
+            opponent_state = from_numpy_state(anchor_state)
+        elif opponent_states:
+            opponent_state = from_numpy_state(random.choice(opponent_states))
+        else:
+            opponent_state = None
         if opponent_state is not None:
             load_state(_OPPONENT, opponent_state)
         samples, sp_stats = generate_self_play_data(

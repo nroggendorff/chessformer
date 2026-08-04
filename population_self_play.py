@@ -62,6 +62,7 @@ def run_population_self_play(model, device, config, elo_state):
     pbar = tqdm(range(config.population_generations), desc="Population Self-Play")
     last_elo_gen, ranking = 0, list(range(config.population_size))
     num_workers = calibrate_population_workers(device, config)
+    anchor_state_np = to_numpy_state(anchor_state)
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers,
@@ -80,6 +81,7 @@ def run_population_self_play(model, device, config, elo_state):
                         for i, c in enumerate(contenders)
                         if i != idx
                     ],
+                    anchor_state_np,
                     config,
                 ): idx
                 for idx, contender in enumerate(contenders)
