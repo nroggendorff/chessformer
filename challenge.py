@@ -61,7 +61,7 @@ class LichessBot:
         logger.info("Finished challenging the candidate bot list.")
 
     def _send_challenge(self, username: str) -> bool:
-        logger.info(f"Sending standard rapid challenge to @{username}...")
+        logger.info(f"Sending challenge to @{username}...")
         try:
             challenge = self.client.challenges.create(
                 username=username,
