@@ -52,6 +52,8 @@ def play_games_batched(
     resign_threshold=None,
     resign_streak=2,
     add_root_noise=True,
+    value_smoothing=0.0,
+    record_trajectory=True,
 ):
     model.eval()
     if opponent_model is not None:
@@ -86,7 +88,7 @@ def play_games_batched(
                 model,
                 mcts_simulations,
                 add_root_noise,
-                True,
+                record_trajectory,
                 temperature_now,
             ),
             (
@@ -195,7 +197,11 @@ def play_games_batched(
                 value_target = (
                     0.0
                     if winner is None
-                    else float(1.0 if winner == step["turn"] else -1.0)
+                    else float(
+                        (1.0 - value_smoothing)
+                        if winner == step["turn"]
+                        else -(1.0 - value_smoothing)
+                    )
                 )
             else:
                 value_target = bootstrap if step["turn"] == board.turn else -bootstrap

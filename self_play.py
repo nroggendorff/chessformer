@@ -81,6 +81,8 @@ def generate_self_play_data(
     opponent_model=None,
     opponent_state_dict=None,
     add_root_noise=True,
+    value_smoothing=0.0,
+    record_trajectory=True,
 ):
     if not use_multiprocessing:
         with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
@@ -106,6 +108,8 @@ def generate_self_play_data(
                 resign_threshold=config.self_play_resign_threshold,
                 resign_streak=config.self_play_resign_streak,
                 add_root_noise=add_root_noise,
+                value_smoothing=value_smoothing,
+                record_trajectory=record_trajectory,
             )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -142,6 +146,8 @@ def generate_self_play_data(
                 config.self_play_resign_threshold,
                 config.self_play_resign_streak,
                 add_root_noise,
+                value_smoothing,
+                record_trajectory,
             )
             for i, count in enumerate(counts)
         ]
@@ -194,6 +200,7 @@ def head_to_head_score(
         opponent_model=opponent_model,
         opponent_state_dict=opponent_state,
         add_root_noise=False,
+        record_trajectory=False,
     )
     return stats
 
@@ -272,6 +279,8 @@ def run_self_play(
             max(1, config.self_play_iterations // config.self_play_pool_size),
         )
         bad_evals = 0
+        promote_streak = 0
+        last_elo_iter = 0
         for it in pbar:
             opponent_state = (
                 None
@@ -295,6 +304,7 @@ def run_self_play(
                 executor=executor,
                 opponent_model=None if opponent_state is None else opponent_model,
                 opponent_state_dict=opponent_state,
+                value_smoothing=config.self_play_value_smoothing,
             )
             replay.extend_rl(samples)
 
@@ -321,19 +331,34 @@ def run_self_play(
                 )
                 record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
                 if z > config.self_play_promote_z:
-                    elo_state["best_state"] = {
-                        k: v.cpu().clone() for k, v in model.state_dict().items()
-                    }
-                    _, elo_state["elo_ema"] = estimate_elo(
-                        model, device, config, elo_state
-                    )
-                    pbar.write(
-                        f"[iter {it + 1}] promoted: scored {record} vs best "
-                        f"(z={z:.2f}, elo_ema {elo_state['elo_ema']:.0f})"
-                    )
-                    add_to_pool(pool, model, config.self_play_pool_size)
+                    promote_streak += 1
                     bad_evals = 0
+                    if promote_streak < config.self_play_promote_confirm:
+                        pbar.write(
+                            f"[iter {it + 1}] passed eval: scored {record} vs best "
+                            f"(z={z:.2f}, confirm {promote_streak}/{config.self_play_promote_confirm})"
+                        )
+                    else:
+                        elo_state["best_state"] = {
+                            k: v.cpu().clone() for k, v in model.state_dict().items()
+                        }
+                        if (
+                            it + 1 - last_elo_iter
+                            >= config.self_play_elo_refresh_interval
+                        ):
+                            _, elo_state["elo_ema"] = estimate_elo(
+                                model, device, config, elo_state
+                            )
+                            last_elo_iter = it + 1
+                        pbar.write(
+                            f"[iter {it + 1}] promoted: scored {record} vs best "
+                            f"(z={z:.2f}, confirmed {promote_streak}/{config.self_play_promote_confirm}, "
+                            f"elo_ema {elo_state['elo_ema']:.0f})"
+                        )
+                        add_to_pool(pool, model, config.self_play_pool_size)
+                        promote_streak = 0
                 elif z < -config.self_play_rollback_z:
+                    promote_streak = 0
                     bad_evals += 1
                     pbar.write(
                         f"[iter {it + 1}] bad eval: scored {record} vs best "
@@ -345,6 +370,7 @@ def run_self_play(
                         opt.state.clear()
                         bad_evals = 0
                 else:
+                    promote_streak = 0
                     bad_evals = 0
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}

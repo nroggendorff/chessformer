@@ -104,6 +104,8 @@ def worker_play_games(
     resign_threshold=None,
     resign_streak=2,
     add_root_noise=True,
+    value_smoothing=0.0,
+    record_trajectory=True,
 ):
     global _GLOBAL_MODEL
     assert _GLOBAL_MODEL
@@ -142,4 +144,6 @@ def worker_play_games(
         resign_threshold=resign_threshold,
         resign_streak=resign_streak,
         add_root_noise=add_root_noise,
+        value_smoothing=value_smoothing,
+        record_trajectory=record_trajectory,
     )
