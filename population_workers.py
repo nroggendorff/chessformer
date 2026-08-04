@@ -1,5 +1,7 @@
+import concurrent.futures
 import copy
 import gc
+import multiprocessing as mp
 import random
 
 import torch
@@ -16,7 +18,7 @@ _MODEL = _TRAIN_MODEL = _OPT = _SCALER = _OPPONENT = _REPLAY = _DEVICE = None
 def worker_init(device_type, config):
     global _MODEL, _TRAIN_MODEL, _OPT, _SCALER, _OPPONENT, _REPLAY, _DEVICE
     _DEVICE = torch.device(device_type)
-    _MODEL, _TRAIN_MODEL = build_model(config, _DEVICE)
+    _MODEL, _TRAIN_MODEL = build_model(config, _DEVICE, compile_model=False)
     _OPT = set_optimizer_lr(build_optimizer(_MODEL, config), config.self_play_lr)
     _SCALER = build_scaler(_DEVICE)
     _OPPONENT = ChessNet(
@@ -32,6 +34,30 @@ def worker_init(device_type, config):
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
     warmup_train_model(_MODEL, _TRAIN_MODEL, _OPT, _SCALER, config, _DEVICE)
+
+
+def worker_report_cuda_mb():
+    return torch.cuda.memory_reserved(_DEVICE) / (1024**2)
+
+
+def calibrate_population_workers(device, config):
+    if device.type != "cuda" or config.population_size <= 1:
+        return config.population_size
+    free_bytes, _ = torch.cuda.mem_get_info(device.index or 0)
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=mp.get_context("spawn"),
+        initializer=worker_init,
+        initargs=(device.type, config),
+    ) as probe:
+        worker_mb = probe.submit(worker_report_cuda_mb).result()
+    budget_mb = free_bytes / (1024**2) - config.population_memory_safety_margin_mb
+    workers = max(1, min(config.population_size, int(budget_mb // worker_mb)))
+    print(
+        f"Population self-play workers: {workers} "
+        f"(~{worker_mb:.0f} MB/worker, {budget_mb:.0f} MB budget)"
+    )
+    return workers
 
 
 def worker_train_contender(state, opt_state, opponent_states, config):

@@ -7,8 +7,12 @@ from tqdm import tqdm
 
 from evaluation import binomial_z_score, estimate_elo
 from model import ChessNet
-from population_workers import worker_init, worker_train_contender
-from self_play import head_to_head_score, warmup_train_model
+from population_workers import (
+    calibrate_population_workers,
+    worker_init,
+    worker_train_contender,
+)
+from self_play import head_to_head_score
 
 
 def clone_state(state):
@@ -38,10 +42,7 @@ def run_tournament(model, opponent_model, contenders, device, config):
     return scores
 
 
-def run_population_self_play(
-    model, train_model, opt, scaler, device, config, elo_state
-):
-    warmup_train_model(model, train_model, opt, scaler, config, device)
+def run_population_self_play(model, device, config, elo_state):
     contenders = [
         new_contender(model.state_dict()) for _ in range(config.population_size)
     ]
@@ -59,9 +60,10 @@ def run_population_self_play(
 
     pbar = tqdm(range(config.population_generations), desc="Population Self-Play")
     last_elo_gen, ranking = 0, list(range(config.population_size))
+    num_workers = calibrate_population_workers(device, config)
 
     with concurrent.futures.ProcessPoolExecutor(
-        max_workers=config.population_size,
+        max_workers=num_workers,
         mp_context=mp.get_context("spawn"),
         initializer=worker_init,
         initargs=(device.type, config),
@@ -149,15 +151,7 @@ def run_population_self_play(
 
 
 if __name__ == "__main__":
-    from config import (
-        Config,
-        build_model,
-        build_optimizer,
-        build_scaler,
-        default_checkpoint_path,
-        get_device,
-        set_optimizer_lr,
-    )
+    from config import Config, build_model, default_checkpoint_path, get_device
     from model import save_checkpoint
 
     config = Config()
@@ -168,9 +162,7 @@ if __name__ == "__main__":
         if os.path.exists(checkpoint_path)
         else "Starting population self-play from a randomly initialized model"
     )
-    model, train_model = build_model(config, device, checkpoint_path)
-    opt = set_optimizer_lr(build_optimizer(model, config), config.self_play_lr)
-    scaler = build_scaler(device)
+    model, _ = build_model(config, device, checkpoint_path, compile_model=False)
 
-    run_population_self_play(model, train_model, opt, scaler, device, config, {})
+    run_population_self_play(model, device, config, {})
     save_checkpoint(model, checkpoint_path)

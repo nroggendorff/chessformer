@@ -101,7 +101,7 @@ class Config:
     pretrain_sample_stability: int = 2
     pretrain_sample_score_margin: int = 25
 
-    pretrain_epochs: int = 2
+    pretrain_epochs: int = 6
     pretrain_batch_size: int = 128
 
     self_play_iterations: int = 100
@@ -139,6 +139,7 @@ class Config:
     population_generation_iters: int = 4
     population_tournament_games: int = 16
     population_elo_refresh_generations: int = 5
+    population_memory_safety_margin_mb: float = 2048.0
 
     self_play_mcts_simulations: int = 120
     self_play_opponent_mcts_simulations: int = 120
@@ -185,7 +186,7 @@ class Config:
         return max(1, self.pretrain_epochs * dataset_size // self.pretrain_batch_size)
 
 
-def build_model(config, device, checkpoint_path=None):
+def build_model(config, device, checkpoint_path=None, compile_model=True):
     model = ChessNet(
         d_model=config.d_model,
         nhead=config.nhead,
@@ -195,7 +196,9 @@ def build_model(config, device, checkpoint_path=None):
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(load_file(checkpoint_path, device="cpu"))
     train_model = (
-        torch.compile(model, mode="reduce-overhead") if device.type == "cuda" else model
+        torch.compile(model, mode="reduce-overhead")
+        if compile_model and device.type == "cuda"
+        else model
     )
     return model, train_model
 
