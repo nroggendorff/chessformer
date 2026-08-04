@@ -89,8 +89,6 @@ class Config:
     pretrain_depth: int = 12
     pretrain_sample_multipv: int = 6
     pretrain_node_cap: int | None = 300000
-    pretrain_epochs: int = 2
-    pretrain_batch_size: int = 128
     pretrain_hash_mb: int = 128
     pretrain_drive_depth: int = 3
     pretrain_drive_multipv: int = 8
@@ -102,6 +100,9 @@ class Config:
     pretrain_max_sample_entropy: float = 1.5
     pretrain_sample_stability: int = 2
     pretrain_sample_score_margin: int = 25
+
+    pretrain_epochs: int = 2
+    pretrain_batch_size: int = 128
 
     self_play_iterations: int = 100
     self_play_games_per_iter: int = 32
