@@ -132,6 +132,13 @@ class Config:
     self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
 
+    population_size: int = 4
+    population_survivors: int = 2
+    population_generations: int = 25
+    population_generation_iters: int = 4
+    population_tournament_games: int = 16
+    population_elo_refresh_generations: int = 5
+
     self_play_mcts_simulations: int = 120
     self_play_opponent_mcts_simulations: int = 120
     inference_mcts_simulations: int = 400
