@@ -20,6 +20,7 @@ from self_play_workers import (
     worker_init,
     worker_play_games,
 )
+from state_utils import load_state
 from training import train_batch
 
 
@@ -184,7 +185,7 @@ def head_to_head_score(
     executor=None,
 ):
     if not use_multiprocessing:
-        opponent_model.load_state_dict(opponent_state)
+        load_state(opponent_model, opponent_state)
     _, stats = generate_self_play_data(
         model,
         games,

@@ -13,6 +13,7 @@ from population_workers import (
     worker_train_contender,
 )
 from self_play import head_to_head_score
+from state_utils import from_numpy_state, load_state, to_numpy_state
 
 
 def clone_state(state):
@@ -26,7 +27,7 @@ def new_contender(state):
 def run_tournament(model, opponent_model, contenders, device, config):
     scores = [0.0] * len(contenders)
     for i, j in itertools.combinations(range(len(contenders)), 2):
-        model.load_state_dict(contenders[i]["state"])
+        load_state(model, contenders[i]["state"])
         stats = head_to_head_score(
             model,
             opponent_model,
@@ -72,9 +73,13 @@ def run_population_self_play(model, device, config, elo_state):
             futures = {
                 pool.submit(
                     worker_train_contender,
-                    contender["state"],
-                    contender["opt_state"],
-                    [c["state"] for i, c in enumerate(contenders) if i != idx],
+                    to_numpy_state(contender["state"]),
+                    to_numpy_state(contender["opt_state"]),
+                    [
+                        to_numpy_state(c["state"])
+                        for i, c in enumerate(contenders)
+                        if i != idx
+                    ],
                     config,
                 ): idx
                 for idx, contender in enumerate(contenders)
@@ -82,8 +87,8 @@ def run_population_self_play(model, device, config, elo_state):
             for future in concurrent.futures.as_completed(futures):
                 idx = futures[future]
                 state, opt_state, losses, totals = future.result()
-                contenders[idx]["state"] = state
-                contenders[idx]["opt_state"] = opt_state
+                contenders[idx]["state"] = from_numpy_state(state)
+                contenders[idx]["opt_state"] = from_numpy_state(opt_state)
                 avg_loss = (
                     sum(x[0] for x in losses) / len(losses) if losses else float("nan")
                 )
@@ -116,7 +121,7 @@ def run_population_self_play(model, device, config, elo_state):
 
             if gen + 1 - last_elo_gen >= config.population_elo_refresh_generations:
                 last_elo_gen = gen + 1
-                model.load_state_dict(contenders[ranking[0]]["state"])
+                load_state(model, contenders[ranking[0]]["state"])
                 _, elo_state["elo_ema"] = estimate_elo(model, device, config, elo_state)
                 anchor_stats = head_to_head_score(
                     model,
@@ -147,7 +152,7 @@ def run_population_self_play(model, device, config, elo_state):
                         "original pretrained checkpoint"
                     )
 
-    model.load_state_dict(contenders[ranking[0]]["state"])
+    load_state(model, contenders[ranking[0]]["state"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,4 @@
 import concurrent.futures
-import copy
 import gc
 import multiprocessing as mp
 import random
@@ -10,6 +9,7 @@ from config import build_model, build_optimizer, build_scaler, set_optimizer_lr
 from model import ChessNet
 from replay_buffer import DualRingBuffer
 from self_play import generate_self_play_data, warmup_train_model
+from state_utils import from_numpy_state, load_state, to_numpy_state
 from training import train_batch
 
 _MODEL = _TRAIN_MODEL = _OPT = _SCALER = _OPPONENT = _REPLAY = _DEVICE = None
@@ -61,21 +61,21 @@ def calibrate_population_workers(device, config):
 
 
 def worker_train_contender(state, opt_state, opponent_states, config):
-    _MODEL.load_state_dict(state)
+    load_state(_MODEL, state)
     if opt_state is None:
         _OPT.state.clear()
     else:
-        _OPT.load_state_dict(opt_state)
+        _OPT.load_state_dict(from_numpy_state(opt_state))
 
     losses, totals = [], {"games": 0, "decisive": 0, "drawn": 0, "unresolved": 0}
     for _ in range(config.population_generation_iters):
         opponent_state = (
             None
             if not opponent_states or random.random() < config.self_play_pool_self_prob
-            else random.choice(opponent_states)
+            else from_numpy_state(random.choice(opponent_states))
         )
         if opponent_state is not None:
-            _OPPONENT.load_state_dict(opponent_state)
+            load_state(_OPPONENT, opponent_state)
         samples, sp_stats = generate_self_play_data(
             _MODEL,
             config.self_play_games_per_iter,
@@ -103,8 +103,8 @@ def worker_train_contender(state, opt_state, opponent_states, config):
     gc.collect()
 
     return (
-        {k: v.cpu().clone() for k, v in _MODEL.state_dict().items()},
-        copy.deepcopy(_OPT.state_dict()),
+        to_numpy_state(_MODEL.state_dict()),
+        to_numpy_state(_OPT.state_dict()),
         losses,
         totals,
     )
