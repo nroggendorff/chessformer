@@ -81,6 +81,8 @@ def generate_self_play_data(
     executor=None,
     opponent_model=None,
     opponent_state_dict=None,
+    stockfish_engine=None,
+    stockfish_movetime=0.1,
     add_root_noise=True,
     value_smoothing=0.0,
     record_trajectory=True,
@@ -106,12 +108,19 @@ def generate_self_play_data(
                 dirichlet_alpha=config.mcts_dirichlet_alpha,
                 root_noise_frac=config.mcts_root_noise_frac,
                 opponent_model=opponent_model,
+                stockfish_engine=stockfish_engine,
+                stockfish_movetime=stockfish_movetime,
                 resign_threshold=config.self_play_resign_threshold,
                 resign_streak=config.self_play_resign_streak,
                 add_root_noise=add_root_noise,
                 value_smoothing=value_smoothing,
                 record_trajectory=record_trajectory,
             )
+
+    if stockfish_engine is not None:
+        raise NotImplementedError(
+            "stockfish_engine is only supported without multiprocessing"
+        )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
     state_dict = {k: v.cpu() for k, v in model.state_dict().items()}

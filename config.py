@@ -125,6 +125,7 @@ class Config:
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.5
     self_play_anchor_prob: float = 0.25
+    self_play_stockfish_prob: float = 0.15
     self_play_pool_update_interval: int = 25
     self_play_h2h_games: int = 40
     self_play_eval_count: int = 16
@@ -141,6 +142,8 @@ class Config:
     population_tournament_games: int = 16
     population_elo_refresh_generations: int = 5
     population_memory_safety_margin_mb: float = 2048.0
+    population_stockfish_elo: int = 1400
+    population_stockfish_movetime: float = 0.1
 
     self_play_mcts_simulations: int = 120
     self_play_opponent_mcts_simulations: int = 120

@@ -1,6 +1,7 @@
 import random
 
 import chess
+import chess.engine
 import numpy as np
 import torch
 
@@ -49,6 +50,8 @@ def play_games_batched(
     dirichlet_alpha=0.3,
     root_noise_frac=0.25,
     opponent_model=None,
+    stockfish_engine=None,
+    stockfish_movetime=0.1,
     resign_threshold=None,
     resign_streak=2,
     add_root_noise=True,
@@ -58,6 +61,7 @@ def play_games_batched(
     model.eval()
     if opponent_model is not None:
         opponent_model.eval()
+    self_play_mode = opponent_model is None and stockfish_engine is None
 
     boards = [chess.Board() for _ in range(num_games)]
     roots = [MCTSNode(board.copy()) for board in boards]
@@ -75,54 +79,33 @@ def play_games_batched(
             break
 
         learner_idx = [
-            i
-            for i in active
-            if opponent_model is None or boards[i].turn == learner_color[i]
+            i for i in active if self_play_mode or boards[i].turn == learner_color[i]
         ]
         opponent_idx = [i for i in active if i not in learner_idx]
         temperature_now = temperature if ply < sample_moves else temperature_floor
 
-        for indices, search_model, sims, noise, record, temp in (
-            (
-                learner_idx,
-                model,
-                mcts_simulations,
-                add_root_noise,
-                record_trajectory,
-                temperature_now,
-            ),
-            (
-                opponent_idx,
-                opponent_model,
-                opponent_mcts_simulations,
-                False,
-                False,
-                temperature_floor,
-            ),
-        ):
-            if not indices:
-                continue
+        if learner_idx:
             run_mcts(
-                [roots[i] for i in indices],
-                search_model,
+                [roots[i] for i in learner_idx],
+                model,
                 device,
-                num_simulations=sims,
+                num_simulations=mcts_simulations,
                 sims_per_wave=sims_per_wave,
                 target_batch_size=target_batch_size,
                 max_batch_size=max_batch_size,
                 c_puct=c_puct,
-                add_root_noise=noise,
+                add_root_noise=add_root_noise,
                 root_dirichlet_alpha=dirichlet_alpha,
                 root_noise_frac=root_noise_frac,
             )
-            for i in indices:
+            for i in learner_idx:
                 board, root = boards[i], roots[i]
-                move = choose_move(root, temp)
+                move = choose_move(root, temperature_now)
                 if move is None:
                     finished[i] = True
                     continue
 
-                if record:
+                if record_trajectory:
                     policy_pairs = visit_policy_pairs(root, board.turn)
                     trajectories[i].append(
                         {
@@ -159,9 +142,47 @@ def play_games_batched(
                 board.push(move)
                 roots[i] = (
                     _advance_root(root, move, board)
-                    if opponent_model is None
+                    if self_play_mode
                     else MCTSNode(board.copy())
                 )
+                if board.outcome(claim_draw=True) is not None:
+                    finished[i] = True
+
+        if opponent_idx and stockfish_engine is not None:
+            for i in opponent_idx:
+                board = boards[i]
+                move = stockfish_engine.play(
+                    board, chess.engine.Limit(time=stockfish_movetime)
+                ).move
+                if move is None:
+                    finished[i] = True
+                    continue
+                board.push(move)
+                roots[i] = MCTSNode(board.copy())
+                if board.outcome(claim_draw=True) is not None:
+                    finished[i] = True
+        elif opponent_idx:
+            run_mcts(
+                [roots[i] for i in opponent_idx],
+                opponent_model,
+                device,
+                num_simulations=opponent_mcts_simulations,
+                sims_per_wave=sims_per_wave,
+                target_batch_size=target_batch_size,
+                max_batch_size=max_batch_size,
+                c_puct=c_puct,
+                add_root_noise=False,
+                root_dirichlet_alpha=dirichlet_alpha,
+                root_noise_frac=root_noise_frac,
+            )
+            for i in opponent_idx:
+                board, root = boards[i], roots[i]
+                move = choose_move(root, temperature_floor)
+                if move is None:
+                    finished[i] = True
+                    continue
+                board.push(move)
+                roots[i] = MCTSNode(board.copy())
                 if board.outcome(claim_draw=True) is not None:
                     finished[i] = True
 
