@@ -57,7 +57,7 @@ def play_games_batched(
     add_root_noise=True,
     value_smoothing=0.0,
     record_trajectory=True,
-    include_policy_q_threshold=0.9,
+    include_policy_q_threshold=1.1,
 ):
     model.eval()
     if opponent_model is not None:

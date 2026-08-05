@@ -6,13 +6,14 @@ import os
 import random
 import time
 
+import chess.engine
 import numpy as np
 import torch
 from tqdm import tqdm
 
 from config import amp_dtype, build_scheduler
 from encoding import INPUT_SIZE
-from evaluation import binomial_z_score, estimate_elo
+from evaluation import binomial_z_score, clamp_uci_elo, estimate_elo
 from model import ChessNet
 from self_play_game import play_games_batched
 from self_play_workers import (
@@ -41,41 +42,6 @@ def warmup_train_model(model, train_model, opt, scaler, config, device):
     train_batch(train_model, opt, scaler, samples, device)
     model.load_state_dict(state)
     opt.state.clear()
-
-
-def warmup_value_head(
-    model,
-    train_model,
-    opt,
-    scaler,
-    replay,
-    device,
-    config,
-    use_multiprocessing,
-    max_workers,
-    executor,
-):
-    if config.self_play_value_warmup_steps <= 0:
-        return
-    samples, _ = generate_self_play_data(
-        model,
-        config.self_play_games_per_iter,
-        config.self_play_max_moves,
-        config.self_play_sample_moves,
-        config.self_play_temperature,
-        config.self_play_temperature_floor,
-        device,
-        config,
-        use_multiprocessing,
-        max_workers=max_workers,
-        executor=executor,
-        value_smoothing=config.self_play_value_smoothing,
-    )
-    replay.extend_rl([(*s[:5], 0.0, s[6]) for s in samples])
-    for _ in tqdm(range(config.self_play_value_warmup_steps), desc="Value-head warmup"):
-        batch = replay.sample_rl(config.self_play_batch_size)
-        if batch:
-            train_batch(train_model, opt, scaler, batch, device, entropy_coef=0.0)
 
 
 def add_to_pool(pool, model, pool_size):
@@ -121,7 +87,13 @@ def generate_self_play_data(
     add_root_noise=True,
     value_smoothing=0.0,
     record_trajectory=True,
+    mcts_simulations=None,
+    opponent_mcts_simulations=None,
 ):
+    mcts_simulations = mcts_simulations or config.self_play_mcts_simulations
+    opponent_mcts_simulations = (
+        opponent_mcts_simulations or config.self_play_opponent_mcts_simulations
+    )
     if not use_multiprocessing:
         with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
             return play_games_batched(
@@ -134,8 +106,8 @@ def generate_self_play_data(
                 temperature_floor=temperature_floor,
                 decisive_weight=config.self_play_decisive_weight,
                 timeout_value_weight=config.self_play_timeout_value_weight,
-                mcts_simulations=config.self_play_mcts_simulations,
-                opponent_mcts_simulations=config.self_play_opponent_mcts_simulations,
+                mcts_simulations=mcts_simulations,
+                opponent_mcts_simulations=opponent_mcts_simulations,
                 sims_per_wave=config.mcts_sims_per_wave,
                 target_batch_size=config.mcts_target_batch_size,
                 max_batch_size=config.mcts_max_batch_size,
@@ -179,8 +151,8 @@ def generate_self_play_data(
                 temperature_floor,
                 config.self_play_decisive_weight,
                 config.self_play_timeout_value_weight,
-                config.self_play_mcts_simulations,
-                config.self_play_opponent_mcts_simulations,
+                mcts_simulations,
+                opponent_mcts_simulations,
                 config.mcts_sims_per_wave,
                 config.mcts_target_batch_size,
                 config.mcts_max_batch_size,
@@ -248,6 +220,8 @@ def head_to_head_score(
         opponent_state_dict=opponent_state,
         add_root_noise=False,
         record_trajectory=False,
+        mcts_simulations=config.inference_mcts_simulations,
+        opponent_mcts_simulations=config.inference_mcts_simulations,
     )
     return stats
 
@@ -293,7 +267,7 @@ def run_self_play(
         else contextlib.nullcontext()
     )
 
-    with executor_cm as executor:
+    with executor_cm as executor, contextlib.ExitStack() as stack:
         if "elo_ema" not in elo_state:
             estimate_elo(model, device, config, elo_state)
 
@@ -312,19 +286,24 @@ def run_self_play(
             p.requires_grad_(False)
 
         pool = [elo_state["best_state"]]
-
-        warmup_value_head(
-            model,
-            train_model,
-            opt,
-            scaler,
-            replay,
-            device,
-            config,
-            use_multiprocessing,
-            max_workers,
-            executor,
-        )
+        stockfish_engine = None
+        if config.self_play_stockfish_prob > 0 and not use_multiprocessing:
+            try:
+                stockfish_engine = stack.enter_context(
+                    chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
+                )
+                stockfish_engine.configure(
+                    {
+                        "UCI_LimitStrength": True,
+                        "UCI_Elo": clamp_uci_elo(
+                            stockfish_engine, config.self_play_stockfish_elo
+                        ),
+                    }
+                )
+            except (FileNotFoundError, chess.engine.EngineError) as error:
+                print(f"Stockfish self-play opponents disabled: {error}")
+        elif config.self_play_stockfish_prob > 0:
+            print("Stockfish self-play opponents require self_play_max_workers=1")
 
         pbar = tqdm(
             range(config.self_play_iterations),
@@ -333,10 +312,6 @@ def run_self_play(
         )
         eval_interval = max(
             1, round(config.self_play_iterations / config.self_play_eval_count)
-        )
-        pool_update_interval = min(
-            config.self_play_pool_update_interval,
-            max(1, config.self_play_iterations // config.self_play_pool_size),
         )
         bad_evals = 0
         promote_streak = 0
@@ -354,10 +329,22 @@ def run_self_play(
             )
 
         for it in pbar:
+            roll = random.random()
+            self_threshold = config.self_play_pool_self_prob
+            anchor_threshold = self_threshold + config.self_play_anchor_prob
+            stockfish_threshold = anchor_threshold + config.self_play_stockfish_prob
+            use_stockfish = (
+                stockfish_engine is not None
+                and anchor_threshold <= roll < stockfish_threshold
+            )
             opponent_state = (
                 None
-                if random.random() < config.self_play_pool_self_prob
-                else random.choice(pool)
+                if roll < self_threshold or use_stockfish
+                else (
+                    elo_state["best_state"]
+                    if roll < anchor_threshold
+                    else random.choice(pool)
+                )
             )
             if opponent_state is not None and not use_multiprocessing:
                 opponent_model.load_state_dict(opponent_state)
@@ -376,12 +363,11 @@ def run_self_play(
                 executor=executor,
                 opponent_model=None if opponent_state is None else opponent_model,
                 opponent_state_dict=opponent_state,
+                stockfish_engine=stockfish_engine if use_stockfish else None,
+                stockfish_movetime=config.self_play_stockfish_movetime,
                 value_smoothing=config.self_play_value_smoothing,
             )
             replay.extend_rl(samples)
-
-            if (it + 1) % pool_update_interval == 0:
-                add_to_pool(pool, model, config.self_play_pool_size)
 
             if (it + 1) % eval_interval == 0:
                 h2h = head_to_head_score(
@@ -534,15 +520,9 @@ def run_self_play(
             h2h["learner_wins"], h2h["drawn"], h2h["games"] - h2h["unresolved"]
         )
         record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
-        if z <= -config.self_play_final_rollback_z:
-            pbar.write(
-                f"[final] rolling back to best; final run scored {record} (z={z:.2f})"
-            )
-            model.load_state_dict(elo_state["best_state"])
-        else:
-            pbar.write(
-                f"[final] keeping current weights: scored {record} vs best (z={z:.2f})"
-            )
+        pbar.write(f"[final] candidate scored {record} vs best (z={z:.2f})")
+        model.load_state_dict(elo_state["best_state"])
+        pbar.write("[final] restored the last promoted champion")
         final_elo, elo_state["elo_ema"] = estimate_elo(model, device, config, elo_state)
         pbar.write(f"[final] elo estimate: {final_elo:.0f}")
 

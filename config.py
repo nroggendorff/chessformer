@@ -107,7 +107,7 @@ class Config:
     self_play_iterations: int = 100
     self_play_games_per_iter: int = 32
     self_play_temperature: float = 1.0
-    self_play_temperature_floor: float = 0.1
+    self_play_temperature_floor: float = 0.0
     self_play_max_moves: int = 110
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
@@ -116,30 +116,30 @@ class Config:
     self_play_timeout_value_weight: float = 0.1
     self_play_value_smoothing: float = 0.05
     self_play_entropy_coef: float = 0.0
-    self_play_include_policy_q_threshold: float = 0.9
-    self_play_value_warmup_steps: int = 100
+    self_play_include_policy_q_threshold: float = 1.1
     self_play_lr: float = 8e-5
     self_play_promote_z: float = 1.5
     self_play_promote_confirm: int = 2
     self_play_rollback_z: float = 1.5
     self_play_rollback_patience: int = 3
     self_play_final_h2h_multiplier: int = 4
-    self_play_final_rollback_z: float = 0.5
     self_play_elo_drop_rollback: float = 75.0
-    self_play_resign_threshold: float = 0.8
+    self_play_resign_threshold: float | None = None
     self_play_resign_streak: int = 4
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.5
     self_play_anchor_prob: float = 0.25
     self_play_stockfish_prob: float = 0.15
     self_play_pool_update_interval: int = 25
-    self_play_h2h_games: int = 40
+    self_play_h2h_games: int = 120
     self_play_eval_count: int = 16
     self_play_elo_refresh_interval: int = 20
     self_play_max_workers: int | None = 1
     self_play_worker_max_tasks: int = 256
     self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
+    self_play_stockfish_elo: int = 1800
+    self_play_stockfish_movetime: float = 0.2
 
     population_size: int = 4
     population_survivors: int = 2
@@ -152,15 +152,15 @@ class Config:
     population_stockfish_elo: int = 1400
     population_stockfish_movetime: float = 0.1
 
-    self_play_mcts_simulations: int = 120
-    self_play_opponent_mcts_simulations: int = 120
+    self_play_mcts_simulations: int = 240
+    self_play_opponent_mcts_simulations: int = 240
     inference_mcts_simulations: int = 400
     mcts_sims_per_wave: int = 8
     mcts_target_batch_size: int = 8192
     mcts_max_batch_size: int = 1024
     mcts_c_puct: float = 1.5
     mcts_dirichlet_alpha: float = 0.3
-    mcts_root_noise_frac: float = 0.25
+    mcts_root_noise_frac: float = 0.15
 
     elo_eval_count: int = 2
     elo_eval_games: int = 90
