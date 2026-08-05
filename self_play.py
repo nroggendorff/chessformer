@@ -556,6 +556,9 @@ if __name__ == "__main__":
         build_scheduler,
         default_checkpoint_path,
         get_device,
+        load_optimizer_state,
+        optimizer_state_path,
+        save_optimizer_state,
         set_optimizer_lr,
     )
     from model import save_checkpoint
@@ -564,17 +567,35 @@ if __name__ == "__main__":
     config = Config()
     device = get_device()
     checkpoint_path = default_checkpoint_path()
+    resuming = os.path.exists(checkpoint_path)
     print(
         f"Resuming self-play from {checkpoint_path}"
-        if os.path.exists(checkpoint_path)
+        if resuming
         else "Starting self-play from a randomly initialized model"
     )
     model, train_model = build_model(config, device, checkpoint_path)
     opt = set_optimizer_lr(build_optimizer(model, config), config.self_play_lr)
     scaler = build_scaler(device)
-    scheduler = build_scheduler(
-        opt, config.self_play_iterations * config.self_play_gradient_steps
-    )
+    total_steps = config.self_play_iterations * config.self_play_gradient_steps
+    scheduler = build_scheduler(opt, total_steps)
+    if resuming and os.path.exists(optimizer_state_path(checkpoint_path)):
+        load_optimizer_state(opt, scheduler, checkpoint_path)
+        if scheduler.last_epoch >= total_steps:
+            opt.state.clear()
+            scheduler = build_scheduler(opt, total_steps)
+            print(
+                "Prior LR schedule had already completed — starting a fresh "
+                "schedule on top of the existing weights instead of resuming "
+                "a spent one"
+            )
+        else:
+            print("Resumed optimizer and LR schedule state from prior run")
+    elif resuming:
+        print(
+            "No saved optimizer state found — this run will restart the LR warmup "
+            "and Adam moments against an already-trained checkpoint, which can "
+            "degrade it. Consider restoring from a backup instead."
+        )
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
@@ -583,3 +604,4 @@ if __name__ == "__main__":
         model, train_model, opt, scaler, scheduler, replay, device, config, {}
     )
     save_checkpoint(model, checkpoint_path)
+    save_optimizer_state(opt, scheduler, checkpoint_path)
