@@ -1,3 +1,4 @@
+import argparse
 import json
 import math
 import os
@@ -12,6 +13,7 @@ from config import Config, default_checkpoint_path, get_device
 from evaluation import (
     clamp_uci_elo,
     fit_rating,
+    opening_moves_for_game,
     play_eval_game,
     rating_standard_error,
 )
@@ -34,15 +36,21 @@ LADDER = [
     {"elo": 1700},
     {"elo": 1900},
     {"elo": 2100},
+    {"elo": 2300},
     {"elo": 2400},
+    {"elo": 2500},
+    {"elo": 2600},
     {"elo": 2700},
+    {"elo": 2900},
     {"elo": 3000},
 ]
-START_INDEX = 8
+START_INDEX = next(i for i, level in enumerate(LADDER) if "elo" in level)
 
-GAMES_PER_LEVEL = 16
-MAX_MOVES = 120
-MOVETIME = 0.2
+GAMES_PER_LEVEL = 32
+MAX_MOVES = 160
+MOVETIME = 1.0
+MCTS_SIMULATIONS = 800
+ADJUDICATION_DEPTH = 14
 
 MOVE_QUALITY_POSITIONS = 200
 MOVE_QUALITY_DEPTH = 14
@@ -63,20 +71,32 @@ def get_level_label(level):
     )
 
 
-def configure_engine(engine, level):
+def configure_engine(engine, level, movetime):
     if "elo" in level:
         elo = clamp_uci_elo(engine, level["elo"])
         engine.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
-        return chess.engine.Limit(time=MOVETIME), {"elo": elo}
+        return chess.engine.Limit(time=movetime), {"elo": elo}
 
     engine.configure({"UCI_LimitStrength": False, "Skill Level": level["skill"]})
-    return chess.engine.Limit(time=MOVETIME, depth=level["depth"]), level
+    return chess.engine.Limit(time=movetime, depth=level["depth"]), level
 
 
-def play_level_games(stockfish_path, model, device, config, level, num_games):
+def play_level_games(
+    stockfish_path,
+    model,
+    device,
+    config,
+    level,
+    num_games,
+    max_moves,
+    movetime,
+    mcts_simulations,
+    adjudication_depth,
+    opening_plies,
+):
     with chess.engine.SimpleEngine.popen_uci(stockfish_path) as engine:
         try:
-            limit, actual_level = configure_engine(engine, level)
+            limit, actual_level = configure_engine(engine, level, movetime)
         except chess.engine.EngineError as e:
             print(f"Skipping {get_level_label(level)}: {e}")
             return None
@@ -85,7 +105,18 @@ def play_level_games(stockfish_path, model, device, config, level, num_games):
         label = get_level_label(actual_level)
 
         games = [
-            play_eval_game(engine, model, device, config, i % 2 == 0, MAX_MOVES, limit)
+            play_eval_game(
+                engine,
+                model,
+                device,
+                config,
+                i % 2 == 0,
+                max_moves,
+                limit,
+                mcts_simulations=mcts_simulations,
+                opening_moves=opening_moves_for_game(i, opening_plies),
+                adjudication_depth=adjudication_depth,
+            )
             for i in tqdm(range(num_games), desc=f"vs {label}", leave=False)
         ]
 
@@ -105,12 +136,33 @@ def play_level_games(stockfish_path, model, device, config, level, num_games):
     }
 
 
-def run_adaptive_ladder(stockfish_path, model, device, config):
+def run_adaptive_ladder(
+    stockfish_path,
+    model,
+    device,
+    config,
+    games_per_level,
+    max_moves,
+    movetime,
+    mcts_simulations,
+    adjudication_depth,
+    opening_plies,
+):
     tested = {}
 
     for i in range(START_INDEX, len(LADDER)):
         result = play_level_games(
-            stockfish_path, model, device, config, LADDER[i], GAMES_PER_LEVEL
+            stockfish_path,
+            model,
+            device,
+            config,
+            LADDER[i],
+            games_per_level,
+            max_moves,
+            movetime,
+            mcts_simulations,
+            adjudication_depth,
+            opening_plies,
         )
         if result:
             tested[i] = result
@@ -120,7 +172,17 @@ def run_adaptive_ladder(stockfish_path, model, device, config):
     if START_INDEX in tested and tested[START_INDEX]["score"] == 0:
         for i in range(START_INDEX - 1, -1, -1):
             result = play_level_games(
-                stockfish_path, model, device, config, LADDER[i], GAMES_PER_LEVEL
+                stockfish_path,
+                model,
+                device,
+                config,
+                LADDER[i],
+                games_per_level,
+                max_moves,
+                movetime,
+                mcts_simulations,
+                adjudication_depth,
+                opening_plies,
             )
             if result:
                 tested[i] = result
@@ -225,6 +287,15 @@ def summarize_move_quality(samples):
 
 
 def print_report(report):
+    settings = report["settings"]
+    print(
+        "\nBenchmark budget: "
+        f"{settings['mcts_simulations']} MCTS simulations, "
+        f"{settings['movetime']:.3f}s Stockfish time, "
+        f"{settings['games_per_level']} games per level, "
+        f"{settings['max_moves']} plies, "
+        f"{settings['opening_plies']} opening plies"
+    )
     print("\nLadder results (weakest to strongest):")
     for level in report["levels"]:
         print(
@@ -234,9 +305,14 @@ def print_report(report):
             f"avg {level['avg_plies']:.0f} plies, {level['timeouts']} timeouts"
         )
 
-    if report["estimated_rating"]:
+    if report["estimated_rating"] is not None:
         print(
-            f"\nEstimated calibrated rating: {report['estimated_rating']:.0f} +/- {report['rating_stderr']:.0f}"
+            f"\nEstimated Stockfish-calibrated rating: {report['estimated_rating']:.0f} "
+            f"+/- {report['rating_stderr']:.0f}"
+        )
+        print(
+            f"95% interval: {report['rating_ci95'][0]:.0f} to "
+            f"{report['rating_ci95'][1]:.0f}"
         )
     else:
         print("\nNo calibrated Elo levels were reachable.")
@@ -251,35 +327,84 @@ def print_report(report):
         print(f"  positions analysed: {mq['positions']}")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", default=CHECKPOINT_PATH)
+    parser.add_argument("--stockfish-path")
+    parser.add_argument("--games", type=int, default=GAMES_PER_LEVEL)
+    parser.add_argument("--max-moves", type=int, default=MAX_MOVES)
+    parser.add_argument("--movetime", type=float, default=MOVETIME)
+    parser.add_argument("--mcts-simulations", type=int, default=MCTS_SIMULATIONS)
+    parser.add_argument("--adjudication-depth", type=int, default=ADJUDICATION_DEPTH)
+    parser.add_argument("--opening-plies", type=int, default=8)
+    parser.add_argument(
+        "--move-quality-positions", type=int, default=MOVE_QUALITY_POSITIONS
+    )
+    parser.add_argument("--skip-move-quality", action="store_true")
+    return parser.parse_args()
+
+
 def main():
-    config = Config()
+    args = parse_args()
+    config = Config(
+        **({"stockfish_path": args.stockfish_path} if args.stockfish_path else {})
+    )
     device = get_device()
-    model = load_checkpoint(CHECKPOINT_PATH, device, config)
+    model = load_checkpoint(args.checkpoint, device, config)
 
-    print(f"Loaded checkpoint: {CHECKPOINT_PATH} on {device}")
+    print(f"Loaded checkpoint: {args.checkpoint} on {device}")
 
-    levels = run_adaptive_ladder(config.stockfish_path, model, device, config)
+    levels = run_adaptive_ladder(
+        config.stockfish_path,
+        model,
+        device,
+        config,
+        args.games,
+        args.max_moves,
+        args.movetime,
+        args.mcts_simulations,
+        args.adjudication_depth,
+        args.opening_plies,
+    )
     calibrated = [lvl for lvl in levels if "elo" in lvl["level"]]
 
     rating = fit_rating(calibrated)
     rating_se = rating_standard_error(rating, calibrated)
-
-    positions = load_or_create_positions(
-        POSITIONS_FILE, MOVE_QUALITY_POSITIONS, POSITION_SEED
+    rating_ci95 = (
+        (rating - 1.96 * rating_se, rating + 1.96 * rating_se)
+        if rating is not None and rating_se is not None
+        else None
     )
 
-    with chess.engine.SimpleEngine.popen_uci(config.stockfish_path) as engine:
-        move_samples = evaluate_move_quality(
-            engine, model, device, positions, MOVE_QUALITY_DEPTH
+    if args.skip_move_quality:
+        move_quality = {}
+    else:
+        positions = load_or_create_positions(
+            POSITIONS_FILE, args.move_quality_positions, POSITION_SEED
         )
 
-    move_quality = summarize_move_quality(move_samples)
+        with chess.engine.SimpleEngine.popen_uci(config.stockfish_path) as engine:
+            move_samples = evaluate_move_quality(
+                engine, model, device, positions, MOVE_QUALITY_DEPTH
+            )
+
+        move_quality = summarize_move_quality(move_samples)
 
     report = {
-        "checkpoint": CHECKPOINT_PATH,
+        "checkpoint": args.checkpoint,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "estimated_rating": rating,
         "rating_stderr": rating_se,
+        "rating_ci95": rating_ci95,
+        "rating_reference": "Stockfish UCI_Elo calibration, not a human rating",
+        "settings": {
+            "games_per_level": args.games,
+            "max_moves": args.max_moves,
+            "movetime": args.movetime,
+            "mcts_simulations": args.mcts_simulations,
+            "adjudication_depth": args.adjudication_depth,
+            "opening_plies": args.opening_plies,
+        },
         "levels": levels,
         "move_quality": move_quality,
     }

@@ -11,6 +11,14 @@ from data_generation import pin_to_next_cpu
 from tree_search import mcts_policy_step
 
 ELO_EVAL_ANCHOR_SPREAD = (-200, 0, 200)
+EVAL_OPENING_LINES = (
+    ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "e1g1", "f8c5"),
+    ("d2d4", "d7d5", "c2c4", "e7e6", "b1c3", "g8f6", "c1g5", "f8e7"),
+    ("c2c4", "e7e5", "b1c3", "g8f6", "g2g3", "d7d5", "c4d5", "f6d5"),
+    ("g1f3", "d7d5", "d2d4", "g8f6", "c2c4", "e7e6", "b1c3", "f8b4"),
+    ("e2e4", "c7c5", "g1f3", "d7d6", "d2d4", "c5d4", "f3d4", "g8f6"),
+    ("d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "f8g7", "e2e4", "d7d6"),
+)
 
 _EVAL_ENGINE = None
 
@@ -18,6 +26,11 @@ _EVAL_ENGINE = None
 def clamp_uci_elo(engine, elo):
     option = engine.options.get("UCI_Elo")
     return elo if option is None else max(option.min, min(option.max, elo))
+
+
+def opening_moves_for_game(game_index, plies=None):
+    line = EVAL_OPENING_LINES[game_index % len(EVAL_OPENING_LINES)]
+    return line if plies is None else line[: max(0, plies)]
 
 
 def expected_score(rating, opponent_rating):
@@ -55,7 +68,7 @@ def fit_rating(calibrated_results, lo=-3000.0, hi=4000.0, iters=80):
 
 
 def rating_standard_error(rating, calibrated_results, max_se=600.0):
-    if not rating or not calibrated_results:
+    if rating is None or not calibrated_results:
         return None
 
     information = sum(
@@ -69,11 +82,25 @@ def rating_standard_error(rating, calibrated_results, max_se=600.0):
     return min(max_se, 400 / (math.log(10) * math.sqrt(information)))
 
 
-def play_eval_game(engine, model, device, config, model_is_white, max_moves, limit):
+def play_eval_game(
+    engine,
+    model,
+    device,
+    config,
+    model_is_white,
+    max_moves,
+    limit,
+    mcts_simulations=None,
+    opening_moves=(),
+    adjudication_depth=10,
+):
     board = chess.Board()
+    opening_moves = opening_moves[: max(0, max_moves)]
+    for move in opening_moves:
+        board.push_uci(move)
     mover = chess.WHITE if model_is_white else chess.BLACK
-    plies = 0
-    for _ in range(max_moves):
+    plies = len(opening_moves)
+    for _ in range(max(0, max_moves - plies)):
         if board.is_game_over(claim_draw=True):
             break
         if board.turn == mover:
@@ -81,10 +108,12 @@ def play_eval_game(engine, model, device, config, model_is_white, max_moves, lim
                 [board],
                 model,
                 device,
-                num_simulations=config.inference_mcts_simulations,
+                num_simulations=mcts_simulations or config.inference_mcts_simulations,
                 sims_per_wave=config.mcts_sims_per_wave,
                 c_puct=config.mcts_c_puct,
                 temperature=0.0,
+                target_batch_size=config.mcts_target_batch_size,
+                max_batch_size=config.mcts_max_batch_size,
             )
             board.push(moves[0])
         else:
@@ -95,7 +124,7 @@ def play_eval_game(engine, model, device, config, model_is_white, max_moves, lim
     timed_out = outcome is None
     if timed_out:
         cp = (
-            engine.analyse(board, chess.engine.Limit(depth=10))["score"]
+            engine.analyse(board, chess.engine.Limit(depth=adjudication_depth))["score"]
             .pov(mover)
             .score(mate_score=10000)
         )
@@ -148,6 +177,7 @@ def play_all_anchor_games(
     max_workers,
     mcts_simulations=None,
     random_opening_plies=0,
+    adjudication_depth=10,
 ):
     with chess.engine.SimpleEngine.popen_uci(engine_path) as probe_engine:
         elos = [clamp_uci_elo(probe_engine, anchor) for anchor in anchors]
@@ -204,6 +234,8 @@ def play_all_anchor_games(
                         sims_per_wave=config.mcts_sims_per_wave,
                         c_puct=config.mcts_c_puct,
                         temperature=temp,
+                        target_batch_size=config.mcts_target_batch_size,
+                        max_batch_size=config.mcts_max_batch_size,
                     )
                     for i, move in zip(subset, moves):
                         boards[i].push(move)
@@ -227,7 +259,10 @@ def play_all_anchor_games(
         outcomes = [board.outcome(claim_draw=True) for board in boards]
         timeout_futures = {
             i: pools[anchor_of_game[i]].submit(
-                eval_worker_timeout_score, boards[i].fen(), model_is_white[i]
+                eval_worker_timeout_score,
+                boards[i].fen(),
+                model_is_white[i],
+                adjudication_depth,
             )
             for i, outcome in enumerate(outcomes)
             if outcome is None
@@ -249,9 +284,15 @@ def play_all_anchor_games(
     return results
 
 
+def adaptive_eval_anchors(config, state):
+    center = state.get("last_elo", state.get("elo_ema", config.elo_eval_anchor))
+    center = int(round(center / 50.0) * 50)
+    return [center + spread for spread in ELO_EVAL_ANCHOR_SPREAD]
+
+
 def estimate_elo(model, device, config, state):
     model.eval()
-    anchors = [config.elo_eval_anchor + spread for spread in ELO_EVAL_ANCHOR_SPREAD]
+    anchors = adaptive_eval_anchors(config, state)
     games_per_anchor = max(2, config.elo_eval_games // len(anchors))
 
     results = play_all_anchor_games(
@@ -266,6 +307,7 @@ def estimate_elo(model, device, config, state):
         config.max_workers,
         mcts_simulations=config.elo_eval_mcts_simulations,
         random_opening_plies=config.elo_eval_random_plies,
+        adjudication_depth=config.elo_eval_adjudication_depth,
     )
 
     elo = fit_rating(results)

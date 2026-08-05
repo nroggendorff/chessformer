@@ -326,6 +326,8 @@ def mcts_policy_step(
     add_root_noise=False,
     root_dirichlet_alpha=0.3,
     root_noise_frac=0.25,
+    target_batch_size=None,
+    max_batch_size=None,
 ):
     roots = run_mcts(
         [MCTSNode(board.copy()) for board in boards],
@@ -337,6 +339,8 @@ def mcts_policy_step(
         add_root_noise=add_root_noise,
         root_dirichlet_alpha=root_dirichlet_alpha,
         root_noise_frac=root_noise_frac,
+        target_batch_size=target_batch_size,
+        max_batch_size=max_batch_size,
     )
     moves = [choose_move(root, temperature) for root in roots]
     live_idx = [i for i, m in enumerate(moves) if m is not None]
@@ -362,6 +366,8 @@ def mcts_move(board, model, device, config, temperature=0.0, add_root_noise=Fals
         c_puct=config.mcts_c_puct,
         temperature=temperature,
         add_root_noise=add_root_noise,
+        target_batch_size=config.mcts_target_batch_size,
+        max_batch_size=config.mcts_max_batch_size,
     )
     move = moves[0]
     return move if move is not None else next(iter(board.legal_moves))

@@ -163,12 +163,13 @@ class Config:
     mcts_root_noise_frac: float = 0.15
 
     elo_eval_count: int = 2
-    elo_eval_games: int = 90
+    elo_eval_games: int = 120
     elo_eval_mcts_simulations: int = 128
     elo_eval_random_plies: int = 8
     elo_eval_anchor: int = 1550
     elo_eval_max_moves: int = 120
     elo_eval_movetime: float = 0.2
+    elo_eval_adjudication_depth: int = 12
     elo_eval_ema_alpha: float = 0.3
 
     pretrain_capacity: int = 55360000
