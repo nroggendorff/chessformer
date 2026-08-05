@@ -6,7 +6,7 @@ import os
 from tqdm import tqdm
 
 from evaluation import binomial_z_score, estimate_elo
-from model import ChessNet
+from model import ChessNet, save_checkpoint
 from population_workers import (
     calibrate_population_workers,
     worker_init,
@@ -43,7 +43,7 @@ def run_tournament(model, opponent_model, contenders, device, config):
     return scores
 
 
-def run_population_self_play(model, device, config, elo_state):
+def run_population_self_play(model, device, config, elo_state, checkpoint_path=None):
     contenders = [
         new_contender(model.state_dict()) for _ in range(config.population_size)
     ]
@@ -63,43 +63,59 @@ def run_population_self_play(model, device, config, elo_state):
     last_elo_gen, ranking = 0, list(range(config.population_size))
     num_workers = calibrate_population_workers(device, config)
     anchor_state_np = to_numpy_state(anchor_state)
+    best_state, best_elo = None, None
 
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=num_workers,
-        mp_context=mp.get_context("spawn"),
-        initializer=worker_init,
-        initargs=(device.type, config),
-    ) as pool:
+    def make_pool():
+        return concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_workers,
+            mp_context=mp.get_context("spawn"),
+            initializer=worker_init,
+            initargs=(device.type, config),
+        )
+
+    pool = make_pool()
+    try:
         for gen in pbar:
-            futures = {
-                pool.submit(
-                    worker_train_contender,
-                    to_numpy_state(contender["state"]),
-                    to_numpy_state(contender["opt_state"]),
-                    [
-                        to_numpy_state(c["state"])
-                        for i, c in enumerate(contenders)
-                        if i != idx
-                    ],
-                    anchor_state_np,
-                    config,
-                ): idx
-                for idx, contender in enumerate(contenders)
-            }
-            for future in concurrent.futures.as_completed(futures):
-                idx = futures[future]
-                state, opt_state, losses, totals = future.result()
-                contenders[idx]["state"] = from_numpy_state(state)
-                contenders[idx]["opt_state"] = from_numpy_state(opt_state)
-                avg_loss = (
-                    sum(x[0] for x in losses) / len(losses) if losses else float("nan")
-                )
-                games = max(1, totals["games"])
-                pbar.write(
-                    f"[gen {gen + 1}] contender {idx}: loss={avg_loss:.3f} "
-                    f"resolved={(totals['decisive'] + totals['drawn']) / games:.0%} "
-                    f"decisive={totals['decisive'] / games:.0%}"
-                )
+            while True:
+                try:
+                    futures = {
+                        pool.submit(
+                            worker_train_contender,
+                            to_numpy_state(contender["state"]),
+                            to_numpy_state(contender["opt_state"]),
+                            [
+                                to_numpy_state(c["state"])
+                                for i, c in enumerate(contenders)
+                                if i != idx
+                            ],
+                            anchor_state_np,
+                            config,
+                        ): idx
+                        for idx, contender in enumerate(contenders)
+                    }
+                    for future in concurrent.futures.as_completed(futures):
+                        idx = futures[future]
+                        state, opt_state, losses, totals = future.result()
+                        contenders[idx]["state"] = from_numpy_state(state)
+                        contenders[idx]["opt_state"] = from_numpy_state(opt_state)
+                        avg_loss = (
+                            sum(x[0] for x in losses) / len(losses)
+                            if losses
+                            else float("nan")
+                        )
+                        games = max(1, totals["games"])
+                        pbar.write(
+                            f"[gen {gen + 1}] contender {idx}: loss={avg_loss:.3f} "
+                            f"resolved={(totals['decisive'] + totals['drawn']) / games:.0%} "
+                            f"decisive={totals['decisive'] / games:.0%}"
+                        )
+                    break
+                except concurrent.futures.process.BrokenProcessPool:
+                    pbar.write(
+                        f"[gen {gen + 1}] worker pool crashed, restarting workers and retrying"
+                    )
+                    pool.shutdown(wait=False)
+                    pool = make_pool()
 
             scores = run_tournament(model, opponent_model, contenders, device, config)
             ranking = sorted(
@@ -154,12 +170,38 @@ def run_population_self_play(model, device, config, elo_state):
                         "original pretrained checkpoint"
                     )
 
-    load_state(model, contenders[ranking[0]]["state"])
+                if best_elo is None or elo_state["elo_ema"] > best_elo:
+                    best_elo = elo_state["elo_ema"]
+                    best_state = clone_state(contenders[ranking[0]]["state"])
+                    pbar.write(f"[gen {gen + 1}] new best: elo_ema={best_elo:.0f}")
+                    if checkpoint_path is not None:
+                        load_state(model, best_state)
+                        save_checkpoint(model, checkpoint_path)
+                        pbar.write(
+                            f"[gen {gen + 1}] checkpoint saved to {checkpoint_path}"
+                        )
+                elif (
+                    elo_state["elo_ema"] < best_elo - config.population_rollback_margin
+                ):
+                    pbar.write(
+                        f"[gen {gen + 1}] rolling back population: elo_ema dropped to "
+                        f"{elo_state['elo_ema']:.0f} from best {best_elo:.0f}"
+                    )
+                    contenders = [
+                        new_contender(best_state) for _ in range(config.population_size)
+                    ]
+                    ranking = list(range(config.population_size))
+                    elo_state["elo_ema"] = best_elo
+    finally:
+        pool.shutdown(wait=False)
+
+    load_state(
+        model, best_state if best_state is not None else contenders[ranking[0]]["state"]
+    )
 
 
 if __name__ == "__main__":
     from config import Config, build_model, default_checkpoint_path, get_device
-    from model import save_checkpoint
 
     config = Config()
     device = get_device()
@@ -171,5 +213,5 @@ if __name__ == "__main__":
     )
     model, _ = build_model(config, device, checkpoint_path, compile_model=False)
 
-    run_population_self_play(model, device, config, {})
+    run_population_self_play(model, device, config, {}, checkpoint_path=checkpoint_path)
     save_checkpoint(model, checkpoint_path)

@@ -141,6 +141,7 @@ class Config:
     population_generation_iters: int = 4
     population_tournament_games: int = 16
     population_elo_refresh_generations: int = 5
+    population_rollback_margin: float = 40.0
     population_memory_safety_margin_mb: float = 2048.0
     population_stockfish_elo: int = 1400
     population_stockfish_movetime: float = 0.1
