@@ -22,21 +22,26 @@ def _piece_targets_and_mask(piece_squares, samples):
             if slot is not None:
                 target[b, slot, to] += p
     mass = target.sum(axis=-1, keepdims=True)
-    target = np.divide(target, mass, out=np.zeros_like(target), where=mass > 0)
-    return target, legal, mass[..., 0] > 0
+    per_piece_target = np.divide(
+        target, mass, out=np.zeros_like(target), where=mass > 0
+    )
+    return per_piece_target, target, legal, mass[..., 0]
 
 
-def train_batch(model, opt, scaler, samples, device):
+def train_batch(model, opt, scaler, samples, device, entropy_coef=0.01):
     model.train()
 
     boards = torch.from_numpy(np.stack([s[0] for s in samples])).long().to(device)
     piece_squares, _ = piece_gather(boards[:, :BOARD_SQUARES])
-    target_policy_np, legal_mask_np, active_np = _piece_targets_and_mask(
-        piece_squares.cpu().numpy(), samples
+    target_policy_np, raw_target_np, legal_mask_np, slot_mass_np = (
+        _piece_targets_and_mask(piece_squares.cpu().numpy(), samples)
     )
     target_policy = torch.from_numpy(target_policy_np).to(device)
+    raw_target = torch.from_numpy(raw_target_np).to(device)
     legal_mask = torch.from_numpy(legal_mask_np).to(device)
-    active = torch.from_numpy(active_np).to(device)
+    slot_w = torch.from_numpy(slot_mass_np).to(device)
+    slot_w_denom = slot_w.sum(dim=-1).clamp(min=1e-6)
+    active = slot_w > 0
     active_count = active.sum(dim=-1).clamp(min=1)
     target_values = torch.tensor(
         [s[4] for s in samples], dtype=torch.float32, device=device
@@ -54,8 +59,12 @@ def train_batch(model, opt, scaler, samples, device):
         masked = heatmaps.masked_fill(~legal_mask, -1e4)
         log_probs = F.log_softmax(masked, dim=-1).clamp(min=-20.0)
         per_piece_log_prob = (target_policy * log_probs).sum(dim=-1)
-        sample_log_probs = (per_piece_log_prob * active).sum(dim=-1) / active_count
-        policy_loss = (-sample_log_probs * policy_weights).mean()
+        per_piece_ce = -(per_piece_log_prob * slot_w).sum(dim=-1) / slot_w_denom
+
+        global_log_probs = F.log_softmax(masked.flatten(1), dim=-1).clamp(min=-20.0)
+        global_ce = -(raw_target.flatten(1) * global_log_probs).sum(dim=-1)
+
+        policy_loss = ((per_piece_ce + global_ce) * policy_weights).mean()
 
         piece_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
         entropy = ((piece_entropy * active).sum(dim=-1) / active_count).mean()
@@ -63,7 +72,7 @@ def train_batch(model, opt, scaler, samples, device):
         value_loss = (
             value_weights * F.mse_loss(values, target_values, reduction="none")
         ).mean()
-        loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
+        loss = policy_loss + 0.5 * value_loss - entropy_coef * entropy
 
     if not torch.isfinite(loss):
         opt.zero_grad(set_to_none=True)

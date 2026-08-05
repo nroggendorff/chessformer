@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from config import amp_dtype
+from config import amp_dtype, build_scheduler
 from encoding import INPUT_SIZE
 from evaluation import binomial_z_score, estimate_elo
 from model import ChessNet
@@ -41,6 +41,41 @@ def warmup_train_model(model, train_model, opt, scaler, config, device):
     train_batch(train_model, opt, scaler, samples, device)
     model.load_state_dict(state)
     opt.state.clear()
+
+
+def warmup_value_head(
+    model,
+    train_model,
+    opt,
+    scaler,
+    replay,
+    device,
+    config,
+    use_multiprocessing,
+    max_workers,
+    executor,
+):
+    if config.self_play_value_warmup_steps <= 0:
+        return
+    samples, _ = generate_self_play_data(
+        model,
+        config.self_play_games_per_iter,
+        config.self_play_max_moves,
+        config.self_play_sample_moves,
+        config.self_play_temperature,
+        config.self_play_temperature_floor,
+        device,
+        config,
+        use_multiprocessing,
+        max_workers=max_workers,
+        executor=executor,
+        value_smoothing=config.self_play_value_smoothing,
+    )
+    replay.extend_rl([(*s[:5], 0.0, s[6]) for s in samples])
+    for _ in tqdm(range(config.self_play_value_warmup_steps), desc="Value-head warmup"):
+        batch = replay.sample_rl(config.self_play_batch_size)
+        if batch:
+            train_batch(train_model, opt, scaler, batch, device, entropy_coef=0.0)
 
 
 def add_to_pool(pool, model, pool_size):
@@ -115,6 +150,7 @@ def generate_self_play_data(
                 add_root_noise=add_root_noise,
                 value_smoothing=value_smoothing,
                 record_trajectory=record_trajectory,
+                include_policy_q_threshold=config.self_play_include_policy_q_threshold,
             )
 
     if stockfish_engine is not None:
@@ -158,6 +194,7 @@ def generate_self_play_data(
                 add_root_noise,
                 value_smoothing,
                 record_trajectory,
+                config.self_play_include_policy_q_threshold,
             )
             for i, count in enumerate(counts)
         ]
@@ -276,6 +313,19 @@ def run_self_play(
 
         pool = [elo_state["best_state"]]
 
+        warmup_value_head(
+            model,
+            train_model,
+            opt,
+            scaler,
+            replay,
+            device,
+            config,
+            use_multiprocessing,
+            max_workers,
+            executor,
+        )
+
         pbar = tqdm(
             range(config.self_play_iterations),
             desc="Self-Play RL Optimization",
@@ -291,6 +341,18 @@ def run_self_play(
         bad_evals = 0
         promote_streak = 0
         last_elo_iter = 0
+        start_elo = elo_state["elo_ema"]
+
+        def rollback_to_best(it):
+            nonlocal scheduler
+            model.load_state_dict(elo_state["best_state"])
+            opt.state.clear()
+            scheduler = build_scheduler(
+                opt,
+                config.self_play_gradient_steps
+                * max(1, config.self_play_iterations - it),
+            )
+
         for it in pbar:
             opponent_state = (
                 None
@@ -370,18 +432,37 @@ def run_self_play(
                 elif z < -config.self_play_rollback_z:
                     promote_streak = 0
                     bad_evals += 1
+                    if it + 1 - last_elo_iter >= config.self_play_elo_refresh_interval:
+                        _, elo_state["elo_ema"] = estimate_elo(
+                            model, device, config, elo_state
+                        )
+                        last_elo_iter = it + 1
                     pbar.write(
                         f"[iter {it + 1}] bad eval: scored {record} vs best "
-                        f"(z={z:.2f}, bad_evals={bad_evals}/{config.self_play_rollback_patience})"
+                        f"(z={z:.2f}, bad_evals={bad_evals}/{config.self_play_rollback_patience}, "
+                        f"elo_ema {elo_state['elo_ema']:.0f})"
                     )
                     if bad_evals >= config.self_play_rollback_patience:
                         pbar.write(f"[iter {it + 1}] rolling back to best")
-                        model.load_state_dict(elo_state["best_state"])
-                        opt.state.clear()
+                        rollback_to_best(it)
                         bad_evals = 0
                 else:
                     promote_streak = 0
                     bad_evals = 0
+
+                if (
+                    "elo_ema" in elo_state
+                    and elo_state["elo_ema"]
+                    < start_elo - config.self_play_elo_drop_rollback
+                ):
+                    pbar.write(
+                        f"[iter {it + 1}] elo_ema dropped "
+                        f"{start_elo - elo_state['elo_ema']:.0f} below start "
+                        f"({start_elo:.0f}); rolling back to best"
+                    )
+                    rollback_to_best(it)
+                    bad_evals = 0
+                    promote_streak = 0
             elo_postfix = (
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
             )
@@ -398,7 +479,14 @@ def run_self_play(
                     batch = replay.sample_rl(config.self_play_batch_size)
                     if batch:
                         losses.append(
-                            train_batch(train_model, opt, scaler, batch, device)
+                            train_batch(
+                                train_model,
+                                opt,
+                                scaler,
+                                batch,
+                                device,
+                                entropy_coef=config.self_play_entropy_coef,
+                            )
                         )
                     scheduler.step()
                 if losses:
@@ -434,7 +522,7 @@ def run_self_play(
             model,
             opponent_model,
             elo_state["best_state"],
-            config.self_play_h2h_games,
+            config.self_play_h2h_games * config.self_play_final_h2h_multiplier,
             config.self_play_max_moves,
             device,
             config,
@@ -446,7 +534,7 @@ def run_self_play(
             h2h["learner_wins"], h2h["drawn"], h2h["games"] - h2h["unresolved"]
         )
         record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
-        if z < -config.self_play_rollback_z:
+        if z <= -config.self_play_final_rollback_z:
             pbar.write(
                 f"[final] rolling back to best; final run scored {record} (z={z:.2f})"
             )

@@ -57,6 +57,7 @@ def play_games_batched(
     add_root_noise=True,
     value_smoothing=0.0,
     record_trajectory=True,
+    include_policy_q_threshold=0.9,
 ):
     model.eval()
     if opponent_model is not None:
@@ -105,6 +106,10 @@ def play_games_batched(
                     finished[i] = True
                     continue
 
+                root_q = (
+                    -root.value_sum / root.visit_count if root.visit_count > 0 else 0.0
+                )
+
                 if record_trajectory:
                     policy_pairs = visit_policy_pairs(root, board.turn)
                     trajectories[i].append(
@@ -125,11 +130,12 @@ def play_games_batched(
                                 list(policy_pairs.values()), dtype=np.float32
                             ),
                             "turn": board.turn,
+                            "include_policy": abs(root_q) < include_policy_q_threshold,
                         }
                     )
 
                 if resign_threshold is not None and root.visit_count > 0:
-                    q = -root.value_sum / root.visit_count
+                    q = root_q
                     streaks = losing_streak[i]
                     streaks[board.turn] = (
                         streaks[board.turn] + 1 if q < -resign_threshold else 0
@@ -210,8 +216,11 @@ def play_games_batched(
             decisive += winner is not None
         if not trajectory:
             continue
-        policy_weight = decisive_weight if winner is not None else 1.0
-        value_weight = policy_weight if resolved else timeout_value_weight
+        adjudicated = adjudicated_winner[i] is not None
+        base_policy_weight = (
+            decisive_weight if winner is not None and not adjudicated else 1.0
+        )
+        value_weight = base_policy_weight if resolved else timeout_value_weight
         bootstrap = timeout_values.get(i)
         for step in trajectory:
             if resolved:
@@ -226,6 +235,7 @@ def play_games_batched(
                 )
             else:
                 value_target = bootstrap if step["turn"] == board.turn else -bootstrap
+            policy_weight = base_policy_weight if step["include_policy"] else 0.0
             samples.append(
                 (
                     np.array(step["board_input"], dtype=np.int64),

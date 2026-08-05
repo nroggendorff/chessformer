@@ -61,6 +61,10 @@ def worker_report_cuda_mb():
     return torch.cuda.memory_reserved(_DEVICE) / (1024**2)
 
 
+def worker_clear_replay(_=None):
+    _REPLAY.reset_rl()
+
+
 def calibrate_population_workers(device, config):
     if device.type != "cuda" or config.population_size <= 1:
         return config.population_size
@@ -136,7 +140,16 @@ def worker_train_contender(state, opt_state, opponent_states, anchor_state, conf
         for _ in range(config.self_play_gradient_steps):
             batch = _REPLAY.sample_rl(config.self_play_batch_size)
             if batch:
-                losses.append(train_batch(_TRAIN_MODEL, _OPT, _SCALER, batch, _DEVICE))
+                losses.append(
+                    train_batch(
+                        _TRAIN_MODEL,
+                        _OPT,
+                        _SCALER,
+                        batch,
+                        _DEVICE,
+                        entropy_coef=config.self_play_entropy_coef,
+                    )
+                )
 
     if _DEVICE.type == "cuda":
         torch.cuda.empty_cache()

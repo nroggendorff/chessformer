@@ -9,6 +9,7 @@ from evaluation import binomial_z_score, estimate_elo
 from model import ChessNet, save_checkpoint
 from population_workers import (
     calibrate_population_workers,
+    worker_clear_replay,
     worker_init,
     worker_train_contender,
 )
@@ -24,7 +25,9 @@ def new_contender(state):
     return {"state": clone_state(state), "opt_state": None}
 
 
-def run_tournament(model, opponent_model, contenders, device, config):
+def run_tournament(
+    model, opponent_model, contenders, device, config, anchor_state=None
+):
     scores = [0.0] * len(contenders)
     for i, j in itertools.combinations(range(len(contenders)), 2):
         load_state(model, contenders[i]["state"])
@@ -40,6 +43,21 @@ def run_tournament(model, opponent_model, contenders, device, config):
         )
         scores[i] += stats["learner_wins"] + 0.5 * stats["drawn"]
         scores[j] += stats["opponent_wins"] + 0.5 * stats["drawn"]
+
+    if anchor_state is not None:
+        for i, contender in enumerate(contenders):
+            load_state(model, contender["state"])
+            stats = head_to_head_score(
+                model,
+                opponent_model,
+                anchor_state,
+                config.population_tournament_games,
+                config.self_play_max_moves,
+                device,
+                config,
+                False,
+            )
+            scores[i] += stats["learner_wins"] + 0.5 * stats["drawn"]
     return scores
 
 
@@ -117,7 +135,9 @@ def run_population_self_play(model, device, config, elo_state, checkpoint_path=N
                     pool.shutdown(wait=False)
                     pool = make_pool()
 
-            scores = run_tournament(model, opponent_model, contenders, device, config)
+            scores = run_tournament(
+                model, opponent_model, contenders, device, config, anchor_state
+            )
             ranking = sorted(
                 range(len(contenders)), key=lambda i: scores[i], reverse=True
             )
@@ -166,11 +186,17 @@ def run_population_self_play(model, device, config, elo_state, checkpoint_path=N
                 )
                 if anchor_z < -config.self_play_rollback_z:
                     pbar.write(
-                        f"[gen {gen + 1}] warning: population leader is losing to the "
-                        "original pretrained checkpoint"
+                        f"[gen {gen + 1}] population leader is losing to the "
+                        "original pretrained checkpoint; resetting contenders to "
+                        "the anchor and clearing worker replay buffers"
                     )
-
-                if best_elo is None or elo_state["elo_ema"] > best_elo:
+                    contenders = [
+                        new_contender(anchor_state)
+                        for _ in range(config.population_size)
+                    ]
+                    ranking = list(range(config.population_size))
+                    list(pool.map(worker_clear_replay, range(num_workers)))
+                elif best_elo is None or elo_state["elo_ema"] > best_elo:
                     best_elo = elo_state["elo_ema"]
                     best_state = clone_state(contenders[ranking[0]]["state"])
                     pbar.write(f"[gen {gen + 1}] new best: elo_ema={best_elo:.0f}")

@@ -227,7 +227,10 @@ def run_mcts(
     effective_wave = (
         sims_per_wave
         if not target_batch_size or not live_roots
-        else max(sims_per_wave, target_batch_size // len(live_roots))
+        else min(
+            max(sims_per_wave, target_batch_size // len(live_roots)),
+            max(sims_per_wave, num_simulations // 8),
+        )
     )
 
     remaining = num_simulations

@@ -106,6 +106,7 @@ def worker_play_games(
     add_root_noise=True,
     value_smoothing=0.0,
     record_trajectory=True,
+    include_policy_q_threshold=0.9,
 ):
     global _GLOBAL_MODEL
     assert _GLOBAL_MODEL
@@ -146,4 +147,5 @@ def worker_play_games(
         add_root_noise=add_root_noise,
         value_smoothing=value_smoothing,
         record_trajectory=record_trajectory,
+        include_policy_q_threshold=include_policy_q_threshold,
     )
