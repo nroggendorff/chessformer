@@ -269,7 +269,7 @@ def run_self_play(
         else contextlib.nullcontext()
     )
 
-    with executor_cm as executor, contextlib.ExitStack() as stack:
+    with executor_cm as executor, contextlib.ExitStack():
         if "elo_ema" not in elo_state:
             estimate_elo(model, device, config, elo_state)
 
