@@ -42,8 +42,7 @@ def main():
     )
     pretrain_steps = config.pretrain_steps_for(len(replay.pretrain_buf))
     print(
-        f"Training for {pretrain_steps} steps "
-        f"({config.pretrain_epochs} epochs over {len(replay.pretrain_buf)} examples)"
+        f"Training for {pretrain_steps} steps ({config.pretrain_epochs} epochs over {len(replay.pretrain_buf)} examples)"
     )
 
     elo_state = {}

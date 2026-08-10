@@ -6,7 +6,7 @@ import os
 from tqdm import tqdm
 
 from evaluation import binomial_z_score, estimate_elo
-from model import ChessNet, save_checkpoint
+from model import PecanNet, save_checkpoint
 from population_workers import (
     calibrate_population_workers,
     worker_clear_replay,
@@ -67,7 +67,7 @@ def run_population_self_play(model, device, config, elo_state, checkpoint_path=N
     ]
     anchor_state = clone_state(model.state_dict())
 
-    opponent_model = ChessNet(
+    opponent_model = PecanNet(
         d_model=config.d_model,
         nhead=config.nhead,
         enc_layers=config.enc_layers,
@@ -176,10 +176,7 @@ def run_population_self_play(model, device, config, elo_state, checkpoint_path=N
                     anchor_stats["drawn"],
                     anchor_stats["games"] - anchor_stats["unresolved"],
                 )
-                anchor_record = (
-                    f"{anchor_stats['learner_wins']}-"
-                    f"{anchor_stats['opponent_wins']}-{anchor_stats['drawn']}"
-                )
+                anchor_record = f"{anchor_stats['learner_wins']}-{anchor_stats['opponent_wins']}-{anchor_stats['drawn']}"
                 pbar.write(
                     f"[gen {gen + 1}] leader elo_ema={elo_state['elo_ema']:.0f} vs pretrain anchor: "
                     f"{anchor_record} (z={anchor_z:.2f})"

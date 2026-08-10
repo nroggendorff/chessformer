@@ -1,49 +1,21 @@
-import asyncio
-import atexit
 import concurrent.futures
-import multiprocessing as mp
-import os
 import gc
 import math
+import multiprocessing as mp
+import os
 import random
-import signal
-import threading
 import traceback
 
-import chess
-import chess.engine
 import numpy as np
 from tqdm import tqdm
 
+import pecan as pc
 from encoding import board_to_input, canon_square, legal_moves_by_square_pair
+from oracle import Oracle
 
-PIECE_VALUES = {
-    chess.PAWN: 1,
-    chess.KNIGHT: 3,
-    chess.BISHOP: 3,
-    chess.ROOK: 5,
-    chess.QUEEN: 9,
-}
-STARTING_NON_KING_MATERIAL = 78
+STARTING_NON_KING_MATERIAL = pc.NON_KING_STARTING_MATERIAL
 
-_ENGINE = None
-
-
-def _daemon_run_in_background(coroutine, *, name=None, debug=None):
-    future = concurrent.futures.Future()
-
-    def background():
-        try:
-            asyncio.run(coroutine(future), debug=debug)
-            future.cancel()
-        except Exception as exc:
-            future.set_exception(exc)
-
-    threading.Thread(target=background, name=name, daemon=True).start()
-    return future.result()
-
-
-chess.engine.run_in_background = _daemon_run_in_background
+_ORACLE = None
 
 
 def pin_to_next_cpu(cpu_counter, cpu_lock):
@@ -58,111 +30,19 @@ def pin_to_next_cpu(cpu_counter, cpu_lock):
         pass
 
 
-def worker_shutdown(timeout=5):
-    if _ENGINE is None:
-        return
-
-    def _quit():
-        try:
-            _ENGINE.quit()
-        except Exception:
-            pass
-
-    quit_thread = threading.Thread(target=_quit, daemon=True)
-    quit_thread.start()
-    quit_thread.join(timeout=timeout)
-    if quit_thread.is_alive():
-        try:
-            os.kill(_ENGINE.transport.get_pid(), signal.SIGKILL)
-        except Exception:
-            pass
-
-
-_GAME_COUNTER = None
-
-
-def worker_init(engine_path, hash_mb, cpu_counter, cpu_lock, game_counter):
-    global _ENGINE, _GAME_COUNTER
+def worker_init(cpu_counter, cpu_lock):
+    global _ORACLE
     gc.set_threshold(100000, 50, 50)
     pin_to_next_cpu(cpu_counter, cpu_lock)
-    _ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
-    _ENGINE.configure({"Hash": hash_mb, "Threads": 1})
-    _GAME_COUNTER = game_counter
-    atexit.register(worker_shutdown)
+    _ORACLE = Oracle()
 
 
-def analyse_full_policy(
-    engine, board, depth, multipv=None, nodes=None, legal_moves=None
-):
-    legal_moves = list(board.legal_moves) if legal_moves is None else legal_moves
-    if not legal_moves:
-        return None
-    infos = engine.analyse(
-        board,
-        chess.engine.Limit(depth=depth, nodes=nodes),
-        multipv=min(multipv or len(legal_moves), len(legal_moves)),
-    )
-    return infos if isinstance(infos, list) else [infos]
+def score_to_value(score_cp, scale=400.0):
+    return math.tanh(score_cp / scale)
 
 
-def analyse_converged(
-    engine,
-    board,
-    max_depth,
-    multipv,
-    nodes=None,
-    min_depth=8,
-    stability=3,
-    score_margin=25,
-    legal_moves=None,
-):
-    legal_moves = list(board.legal_moves) if legal_moves is None else legal_moves
-    if not legal_moves:
-        return None, max_depth
-    multipv = min(multipv, len(legal_moves))
-    by_depth, last_best, last_score, streak = {}, None, None, 0
-    with engine.analysis(
-        board, chess.engine.Limit(depth=max_depth, nodes=nodes), multipv=multipv
-    ) as analysis:
-        for info in analysis:
-            if "pv" not in info or "depth" not in info or "score" not in info:
-                continue
-            depth = info["depth"]
-            by_depth.setdefault(depth, {})[info.get("multipv", 1)] = info
-            if len(by_depth[depth]) < multipv:
-                continue
-            top = by_depth[depth][1]
-            top_move = top["pv"][0]
-            top_score = top["score"].pov(board.turn).score(mate_score=100000)
-            stable = top_move == last_best and (
-                last_score is not None and abs(top_score - last_score) <= score_margin
-            )
-            streak = streak + 1 if stable else 1
-            last_best, last_score = top_move, top_score
-            if depth >= min_depth and streak >= stability:
-                break
-    if not by_depth:
-        return None, max_depth
-    final_depth = max(by_depth)
-    return [
-        by_depth[final_depth][i] for i in sorted(by_depth[final_depth])
-    ], final_depth
-
-
-def win_probability(score, ply):
-    return score.wdl(model="sf", ply=ply).expectation()
-
-
-def score_to_value(pov_score, scale=400.0):
-    return math.tanh(pov_score.score(mate_score=100000) / scale)
-
-
-def move_win_probs(infos, board):
-    return {
-        info["pv"][0]: win_probability(info["score"].pov(board.turn), board.ply())
-        for info in infos
-        if "pv" in info and len(info["pv"]) > 0
-    }
+def win_probability(score_cp, scale=400.0):
+    return (score_to_value(score_cp, scale) + 1.0) / 2.0
 
 
 def move_scores(win_probs, temperature):
@@ -171,25 +51,23 @@ def move_scores(win_probs, temperature):
 
 
 def endgame_weight(board, scale):
-    return 1 + scale * (
-        1
-        - min(
-            sum(
-                len(board.pieces(piece_type, color)) * value
-                for piece_type, value in PIECE_VALUES.items()
-                for color in chess.COLORS
-            ),
-            STARTING_NON_KING_MATERIAL,
-        )
-        / STARTING_NON_KING_MATERIAL
+    material = sum(
+        pc.VALUES[p[1]] for p in board.board if p is not None and p[1] != pc.KING
     )
+    return 1 + scale * (
+        1 - min(material, STARTING_NON_KING_MATERIAL) / STARTING_NON_KING_MATERIAL
+    )
+
+
+def _top_k(scored_moves, k):
+    return sorted(scored_moves, key=lambda pair: pair[1], reverse=True)[: max(1, k)]
 
 
 def position_label(
     value, scores, board, weight=1.0, legal_moves=None, include_policy=True
 ):
     if legal_moves is None:
-        legal_moves = list(board.legal_moves)
+        legal_moves = board.legal_moves
     mover = board.turn
     pair_scores = {}
     for move, score in scores.items():
@@ -236,74 +114,54 @@ def _should_include_policy(ply, win_probs, sample_ply_ramp, max_win_prob, max_en
 
 
 def generate_game(
-    engine,
+    oracle,
     max_moves=60,
-    depth_range=(8, 16),
-    drive_depth=3,
+    sample_depth=6,
+    drive_depth=2,
     sample_moves=None,
-    drive_multipv=8,
-    sample_multipv=8,
+    drive_top_k=8,
+    sample_top_k=6,
     endgame_weight_scale=2.0,
     policy_temperature=0.06,
     drive_temperature=0.3,
     node_cap=None,
-    sample_ply_ramp=10,
-    max_sample_win_prob=0.85,
+    sample_ply_ramp=8,
+    max_sample_win_prob=0.97,
     max_sample_entropy=1.5,
-    sample_stability=3,
-    sample_score_margin=25,
 ):
-    board = chess.Board()
+    board = pc.Board()
     sample_plies = set(
-        random.sample(
-            range(max_moves),
-            min(sample_moves if sample_moves is not None else max_moves, max_moves),
-        )
+        random.sample(range(max_moves), min(sample_moves or max_moves, max_moves))
     )
     samples = []
     for ply in range(max_moves):
-        if board.is_game_over():
+        if board.outcome() is not None:
             break
         is_sample = ply in sample_plies
-        legal_moves = list(board.legal_moves)
-        if is_sample:
-            infos, depth = analyse_converged(
-                engine,
-                board,
-                depth_range[1],
-                sample_multipv,
-                nodes=node_cap,
-                min_depth=depth_range[0],
-                stability=sample_stability,
-                score_margin=sample_score_margin,
-                legal_moves=legal_moves,
-            )
-        else:
-            infos, depth = (
-                analyse_full_policy(
-                    engine,
-                    board,
-                    drive_depth,
-                    multipv=drive_multipv,
-                    nodes=node_cap,
-                    legal_moves=legal_moves,
-                ),
-                drive_depth,
-            )
-        if not infos:
+        legal_moves = board.legal_moves
+        if not legal_moves:
             break
 
-        win_probs = move_win_probs(infos, board)
+        result = oracle.search(
+            board, depth=sample_depth if is_sample else drive_depth, node_cap=node_cap
+        )
+        root_scores = result["root_scores"]
+        if not root_scores:
+            break
+
+        kept = _top_k(root_scores, sample_top_k if is_sample else drive_top_k)
+        win_probs = {move: win_probability(score) for move, score in kept}
         scores = move_scores(
             win_probs, policy_temperature if is_sample else drive_temperature
         )
+
         if is_sample:
-            weight = (depth / depth_range[1]) ** 2 * endgame_weight(
+            weight = (result["depth"] / sample_depth) ** 2 * endgame_weight(
                 board, endgame_weight_scale
             )
             samples.append(
                 position_label(
-                    score_to_value(infos[0]["score"].pov(board.turn)),
+                    score_to_value(result["score"]),
                     scores,
                     board,
                     weight=weight,
@@ -327,33 +185,31 @@ def generate_game(
 def worker_generate_games(
     num_games,
     max_moves=60,
-    depth_range=(8, 16),
-    drive_depth=3,
+    sample_depth=6,
+    drive_depth=2,
     sample_moves=None,
-    drive_multipv=8,
-    sample_multipv=8,
+    drive_top_k=8,
+    sample_top_k=6,
     endgame_weight_scale=2.0,
     policy_temperature=0.06,
     drive_temperature=0.3,
     node_cap=None,
-    sample_ply_ramp=10,
-    max_sample_win_prob=0.85,
+    sample_ply_ramp=8,
+    max_sample_win_prob=0.97,
     max_sample_entropy=1.5,
-    sample_stability=3,
-    sample_score_margin=25,
 ):
     samples = []
     for _ in range(num_games):
         try:
             samples.extend(
                 generate_game(
-                    _ENGINE,
+                    _ORACLE,
                     max_moves,
-                    depth_range,
+                    sample_depth,
                     drive_depth,
                     sample_moves,
-                    drive_multipv,
-                    sample_multipv,
+                    drive_top_k,
+                    sample_top_k,
                     endgame_weight_scale,
                     policy_temperature,
                     drive_temperature,
@@ -361,17 +217,12 @@ def worker_generate_games(
                     sample_ply_ramp,
                     max_sample_win_prob,
                     max_sample_entropy,
-                    sample_stability,
-                    sample_score_margin,
                 )
             )
         except Exception:
             tqdm.write(
                 f"skipping a game that raised an error:\n{traceback.format_exc()}"
             )
-        if _GAME_COUNTER is not None:
-            with _GAME_COUNTER.get_lock():
-                _GAME_COUNTER.value += 1
     return samples
 
 
@@ -388,30 +239,23 @@ def generate_pretrain_data(config):
 
     ctx = mp.get_context("spawn")
     cpu_counter, cpu_lock = ctx.Value("i", 0), ctx.Lock()
-    game_counter = ctx.Value("i", 0)
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=max_workers,
         mp_context=ctx,
         initializer=worker_init,
-        initargs=(
-            config.stockfish_path,
-            config.pretrain_hash_mb,
-            cpu_counter,
-            cpu_lock,
-            game_counter,
-        ),
+        initargs=(cpu_counter, cpu_lock),
     ) as executor:
         pending = {
             executor.submit(
                 worker_generate_games,
                 count,
                 config.pretrain_max_moves,
-                (config.pretrain_traj_depth, config.pretrain_depth),
+                config.pretrain_depth,
                 config.pretrain_drive_depth,
                 config.pretrain_sample_moves,
-                config.pretrain_drive_multipv,
-                config.pretrain_sample_multipv,
+                config.pretrain_drive_top_k,
+                config.pretrain_sample_top_k,
                 config.pretrain_endgame_weight,
                 config.pretrain_policy_temperature,
                 config.pretrain_drive_temperature,
@@ -419,42 +263,32 @@ def generate_pretrain_data(config):
                 config.pretrain_sample_ply_ramp,
                 config.pretrain_max_sample_win_prob,
                 config.pretrain_max_sample_entropy,
-                config.pretrain_sample_stability,
-                config.pretrain_sample_score_margin,
             )
             for count in task_game_counts
         }
         with tqdm(
-            total=total_games, desc="Pretrain data generation", unit="games"
+            total=len(task_game_counts), desc="Pretrain data generation", unit="chunks"
         ) as pbar:
             completed, failed, yielded = 0, 0, 0
-            while pending:
-                done, pending = concurrent.futures.wait(
-                    pending,
-                    timeout=0.5,
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
-                pbar.update(game_counter.value - pbar.n)
-                for f in done:
-                    try:
-                        samples = f.result()
-                    except Exception:
-                        failed += 1
-                        tqdm.write(
-                            f"worker chunk {completed} failed "
-                            f"({failed}/{len(task_game_counts)} chunks so far):\n"
-                            f"{traceback.format_exc()}"
-                        )
-                        samples = []
-                    yielded += len(samples)
-                    yield from samples
-                    completed += 1
-                    if completed % max_workers == 0:
-                        gc.collect()
-            pbar.update(game_counter.value - pbar.n)
+            for f in concurrent.futures.as_completed(pending):
+                try:
+                    samples = f.result()
+                except Exception:
+                    failed += 1
+                    tqdm.write(
+                        f"worker chunk {completed} failed "
+                        f"({failed}/{len(task_game_counts)} chunks so far):\n{traceback.format_exc()}"
+                    )
+                    samples = []
+                yielded += len(samples)
+                yield from samples
+                completed += 1
+                pbar.update(1)
+                if completed % max_workers == 0:
+                    gc.collect()
 
     if yielded == 0 and task_game_counts:
         raise RuntimeError(
             f"generate_pretrain_data produced no samples: all {failed}/{len(task_game_counts)} "
-            "worker chunks failed. Check stockfish_path and the errors logged above."
+            "worker chunks failed. See the errors logged above."
         )

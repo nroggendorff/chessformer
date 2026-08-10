@@ -1,88 +1,60 @@
-import chess
+import pecan as pc
 
 TOKEN_EMPTY = 0
-BOARD_SQUARES = 64
-SEQ_LEN = 69
+BOARD_SIZE = pc.BOARD_SIZE
+BOARD_SQUARES = pc.NUM_SQUARES
+NUM_OWN_PIECE_TYPES = len(pc.PIECE_TYPES)
+
+CLOCK_BUCKETS = 5
+CLOCK_BASE = 1 + 2 * NUM_OWN_PIECE_TYPES
+REPETITION_BASE = CLOCK_BASE + CLOCK_BUCKETS
+STM_BASE = REPETITION_BASE + 3
+VOCAB_SIZE = STM_BASE + 2
+
+SEQ_LEN = BOARD_SQUARES + 3
 INPUT_SIZE = SEQ_LEN + 2 * BOARD_SQUARES
-VOCAB_SIZE = 50
-NUM_PIECE_TOKENS = 13
-
-PIECE_BBS = (
-    (chess.PAWN, "pawns"),
-    (chess.KNIGHT, "knights"),
-    (chess.BISHOP, "bishops"),
-    (chess.ROOK, "rooks"),
-    (chess.QUEEN, "queens"),
-    (chess.KING, "kings"),
-)
-
-CASTLING_BASE = 13
-EP_NONE = 29
-EP_FILE_BASE = 30
-CLOCK_BASE = 38
-REPETITION_BASE = 45
-STM_BASE = 48
 
 
-def canon_square(square, mover):
-    return square if mover == chess.WHITE else chess.square_mirror(square)
+def canon_square(sq, mover):
+    return sq if mover == pc.WHITE else pc.square_mirror(sq)
 
 
 def canon_bitboard(bitboard, mover):
-    return bitboard if mover == chess.WHITE else chess.flip_vertical(bitboard)
+    return bitboard if mover == pc.WHITE else pc.flip_vertical(bitboard)
 
 
 def board_to_tokens(board):
-    mover, opponent = board.turn, not board.turn
+    mover, opp = board.turn, not board.turn
     tokens = [TOKEN_EMPTY] * BOARD_SQUARES
-    mover_bb, opponent_bb = board.occupied_co[mover], board.occupied_co[opponent]
+    for sq in range(BOARD_SQUARES):
+        piece = board.board[sq]
+        if piece is None:
+            continue
+        color, ptype = piece
+        token = ptype if color == mover else ptype + NUM_OWN_PIECE_TYPES
+        tokens[canon_square(sq, mover)] = token
 
-    for piece_type, attr in PIECE_BBS:
-        bb = getattr(board, attr)
-        for sq in chess.scan_reversed(canon_bitboard(bb & mover_bb, mover)):
-            tokens[sq] = piece_type
-        for sq in chess.scan_reversed(canon_bitboard(bb & opponent_bb, mover)):
-            tokens[sq] = piece_type + 6
-
-    castling = (
-        int(board.has_kingside_castling_rights(mover))
-        | int(board.has_queenside_castling_rights(mover)) << 1
-        | int(board.has_kingside_castling_rights(opponent)) << 2
-        | int(board.has_queenside_castling_rights(opponent)) << 3
-    )
-    ep_token = (
-        EP_NONE
-        if board.ep_square is None
-        else EP_FILE_BASE + chess.square_file(board.ep_square)
-    )
     repetition = 2 if board.is_repetition(3) else 1 if board.is_repetition(2) else 0
-
     tokens.extend(
         [
-            CASTLING_BASE + castling,
-            ep_token,
-            CLOCK_BASE + min(board.halfmove_clock // 10, 6),
+            CLOCK_BASE + min(board.halfmove_clock // 8, CLOCK_BUCKETS - 1),
             REPETITION_BASE + repetition,
-            STM_BASE + int(mover == chess.BLACK),
+            STM_BASE + int(mover == pc.BLACK),
         ]
     )
     return tokens
-
-
-def _as_int64(bitboard):
-    return bitboard - (1 << 64) if bitboard >= (1 << 63) else bitboard
 
 
 def board_to_input(board):
     mover = board.turn
     last_from = [0] * BOARD_SQUARES
     if board.move_stack:
-        last_from[canon_square(board.peek().from_square, mover)] = 1
+        last_from[canon_square(board.move_stack[-1].from_square, mover)] = 1
     legal_to = [0] * BOARD_SQUARES
-    for origin in chess.SQUARES:
+    for origin in range(BOARD_SQUARES):
         if board.piece_at(origin):
-            legal_to[canon_square(origin, mover)] = _as_int64(
-                canon_bitboard(int(board.attacks(origin)), mover)
+            legal_to[canon_square(origin, mover)] = canon_bitboard(
+                board.attacks(origin), mover
             )
     return board_to_tokens(board) + legal_to + last_from
 
@@ -97,7 +69,7 @@ def legal_moves_by_square_pair(board, legal_moves=None, include_promotions=True)
             canon_square(move.from_square, mover),
             canon_square(move.to_square, mover),
         )
-        if move.promotion in (None, chess.QUEEN):
+        if move.promotion in (None, pc.CHANCELLOR):
             moves[key] = move
         else:
             moves.setdefault(key, move)

@@ -1,13 +1,12 @@
 import math
 import multiprocessing
 import os
-import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 from safetensors.torch import load_file
 
-from model import ChessNet
+from model import PecanNet
 
 
 def get_device():
@@ -26,7 +25,7 @@ def amp_dtype(device):
 
 def default_checkpoint_path():
     return os.path.join(
-        os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "chessformer.safetensors"
+        os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "pecanformer.safetensors"
     )
 
 
@@ -77,29 +76,22 @@ def physical_cpu_count():
 
 @dataclass
 class Config:
-    stockfish_path: str = field(
-        default_factory=lambda: shutil.which("stockfish") or "/usr/games/stockfish"
-    )
-
     pretrain_games: int = 200000
     pretrain_chunk_games: int = 20
-    pretrain_max_moves: int = 120
-    pretrain_sample_moves: int = 30
-    pretrain_traj_depth: int = 8
-    pretrain_depth: int = 12
-    pretrain_sample_multipv: int = 6
-    pretrain_node_cap: int | None = 300000
-    pretrain_hash_mb: int = 128
-    pretrain_drive_depth: int = 3
-    pretrain_drive_multipv: int = 8
+    pretrain_max_moves: int = 100
+    pretrain_sample_moves: int = 24
+    pretrain_traj_depth: int = 3
+    pretrain_depth: int = 6
+    pretrain_sample_top_k: int = 6
+    pretrain_drive_top_k: int = 8
+    pretrain_node_cap: int | None = 60000
+    pretrain_drive_depth: int = 2
     pretrain_endgame_weight: float = 2.0
     pretrain_policy_temperature: float = 0.06
     pretrain_drive_temperature: float = 0.3
-    pretrain_sample_ply_ramp: int = 10
+    pretrain_sample_ply_ramp: int = 8
     pretrain_max_sample_win_prob: float = 0.97
     pretrain_max_sample_entropy: float = 1.5
-    pretrain_sample_stability: int = 2
-    pretrain_sample_score_margin: int = 25
 
     pretrain_epochs: int = 6
     pretrain_batch_size: int = 128
@@ -108,7 +100,7 @@ class Config:
     self_play_games_per_iter: int = 32
     self_play_temperature: float = 1.0
     self_play_temperature_floor: float = 0.0
-    self_play_max_moves: int = 110
+    self_play_max_moves: int = 100
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 16
@@ -128,8 +120,8 @@ class Config:
     self_play_resign_streak: int = 4
     self_play_pool_size: int = 8
     self_play_pool_self_prob: float = 0.5
-    self_play_anchor_prob: float = 0.25
-    self_play_stockfish_prob: float = 0.15
+    self_play_anchor_prob: float = 0.35
+    self_play_oracle_prob: float = 0.15
     self_play_pool_update_interval: int = 25
     self_play_h2h_games: int = 120
     self_play_eval_count: int = 16
@@ -138,8 +130,8 @@ class Config:
     self_play_worker_max_tasks: int = 256
     self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
-    self_play_stockfish_elo: int = 1800
-    self_play_stockfish_movetime: float = 0.2
+    self_play_oracle_depth: int = 4
+    self_play_oracle_node_cap: int | None = 40000
 
     population_size: int = 4
     population_survivors: int = 2
@@ -149,8 +141,8 @@ class Config:
     population_elo_refresh_generations: int = 5
     population_rollback_margin: float = 40.0
     population_memory_safety_margin_mb: float = 2048.0
-    population_stockfish_elo: int = 1400
-    population_stockfish_movetime: float = 0.1
+    population_oracle_depth: int = 3
+    population_oracle_node_cap: int | None = 20000
 
     self_play_mcts_simulations: int = 240
     self_play_opponent_mcts_simulations: int = 240
@@ -165,14 +157,13 @@ class Config:
     elo_eval_count: int = 2
     elo_eval_games: int = 120
     elo_eval_mcts_simulations: int = 128
-    elo_eval_random_plies: int = 8
-    elo_eval_anchor: int = 1550
-    elo_eval_max_moves: int = 120
-    elo_eval_movetime: float = 0.2
-    elo_eval_adjudication_depth: int = 12
+    elo_eval_random_plies: int = 4
+    elo_eval_anchor: int = 1200
+    elo_eval_max_moves: int = 100
+    elo_eval_adjudication_depth: int = 6
     elo_eval_ema_alpha: float = 0.3
 
-    pretrain_capacity: int = 55360000
+    pretrain_capacity: int = 20000000
     rl_capacity: int = 200000
 
     lr: float = 2e-3
@@ -199,7 +190,7 @@ class Config:
 
 
 def build_model(config, device, checkpoint_path=None, compile_model=True):
-    model = ChessNet(
+    model = PecanNet(
         d_model=config.d_model,
         nhead=config.nhead,
         enc_layers=config.enc_layers,

@@ -1,20 +1,19 @@
 import math
 
-import chess
 import numpy as np
 import torch
 
+import pecan as pc
 from encoding import BOARD_SQUARES, board_to_input, legal_moves_by_square_pair
 from model import MAX_PIECES, piece_gather
 
-PROMOTION_PIECE_TYPES = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT)
 MASK_VALUE = -1e4
 
 
 def _promotion_variants(move):
     return [
-        chess.Move(move.from_square, move.to_square, promotion=piece_type)
-        for piece_type in PROMOTION_PIECE_TYPES
+        pc.Move(move.from_square, move.to_square, promo)
+        for promo in pc.PROMOTION_PIECE_TYPES
     ]
 
 
@@ -138,18 +137,11 @@ def _top_fraction_candidates(
 
 @torch.inference_mode()
 def batched_policy_step(
-    boards,
-    model,
-    device,
-    temperature=0.0,
-    top_fraction=None,
-    max_candidates=None,
+    boards, model, device, temperature=0.0, top_fraction=None, max_candidates=None
 ):
     legal_moves = [list(board.legal_moves) for board in boards]
     board_inputs = torch.tensor(
-        [board_to_input(board) for board in boards],
-        dtype=torch.long,
-        device=device,
+        [board_to_input(board) for board in boards], dtype=torch.long, device=device
     )
     heatmap, value = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])

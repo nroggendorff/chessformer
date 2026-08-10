@@ -7,7 +7,7 @@ import resource
 import numpy as np
 import torch
 
-from model import ChessNet
+from model import PecanNet
 from self_play_game import play_games_batched
 
 _GLOBAL_MODEL = None
@@ -20,7 +20,7 @@ def worker_init(device_type, d_model, nhead, enc_layers, heatmap_hidden):
     gc.set_threshold(100000, 50, 50)
     torch.set_num_threads(1)
     _WORKER_MODEL_ARGS = (device_type, d_model, nhead, enc_layers, heatmap_hidden)
-    _GLOBAL_MODEL = ChessNet(
+    _GLOBAL_MODEL = PecanNet(
         d_model=d_model,
         nhead=nhead,
         enc_layers=enc_layers,
@@ -32,7 +32,7 @@ def ensure_opponent():
     global _GLOBAL_OPPONENT
     if _GLOBAL_OPPONENT is None:
         device_type, d_model, nhead, enc_layers, heatmap_hidden = _WORKER_MODEL_ARGS
-        _GLOBAL_OPPONENT = ChessNet(
+        _GLOBAL_OPPONENT = PecanNet(
             d_model=d_model,
             nhead=nhead,
             enc_layers=enc_layers,
@@ -75,8 +75,7 @@ def calibrate_self_play_workers(config):
     safe_workers = max(1, int(budget_mb // worker_rss_mb))
     workers = min(config.self_play_max_workers, safe_workers)
     print(
-        f"Self-play workers: {workers} "
-        f"(~{worker_rss_mb:.0f} MB/worker, {memory_limit_mb:.0f} MB available)"
+        f"Self-play workers: {workers} (~{worker_rss_mb:.0f} MB/worker, {memory_limit_mb:.0f} MB available)"
     )
     return workers
 

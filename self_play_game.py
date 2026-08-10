@@ -1,10 +1,9 @@
 import random
 
-import chess
-import chess.engine
 import numpy as np
 import torch
 
+import pecan as pc
 from encoding import board_to_input, legal_moves_by_square_pair
 from tree_search import MCTSNode, choose_move, run_mcts, visit_policy_pairs
 
@@ -14,9 +13,7 @@ def _bootstrap_timeout_values(boards, indices, model, device):
     if not indices:
         return {}
     board_inputs = torch.tensor(
-        [board_to_input(boards[i]) for i in indices],
-        dtype=torch.long,
-        device=device,
+        [board_to_input(boards[i]) for i in indices], dtype=torch.long, device=device
     )
     _, values = model(board_inputs, value_only=True)
     return dict(zip(indices, values.float().cpu().tolist()))
@@ -50,8 +47,9 @@ def play_games_batched(
     dirichlet_alpha=0.3,
     root_noise_frac=0.25,
     opponent_model=None,
-    stockfish_engine=None,
-    stockfish_movetime=0.1,
+    oracle_engine=None,
+    oracle_depth=4,
+    oracle_node_cap=None,
     resign_threshold=None,
     resign_streak=2,
     add_root_noise=True,
@@ -62,12 +60,12 @@ def play_games_batched(
     model.eval()
     if opponent_model is not None:
         opponent_model.eval()
-    self_play_mode = opponent_model is None and stockfish_engine is None
+    self_play_mode = opponent_model is None and oracle_engine is None
 
-    boards = [chess.Board() for _ in range(num_games)]
+    boards = [pc.Board() for _ in range(num_games)]
     roots = [MCTSNode(board.copy()) for board in boards]
     learner_color = [
-        chess.WHITE if random.random() < 0.5 else chess.BLACK for _ in range(num_games)
+        pc.WHITE if random.random() < 0.5 else pc.BLACK for _ in range(num_games)
     ]
     trajectories: list[list[dict]] = [[] for _ in range(num_games)]
     finished = [False] * num_games
@@ -154,12 +152,12 @@ def play_games_batched(
                 if board.outcome(claim_draw=True) is not None:
                     finished[i] = True
 
-        if opponent_idx and stockfish_engine is not None:
+        if opponent_idx and oracle_engine is not None:
             for i in opponent_idx:
                 board = boards[i]
-                move = stockfish_engine.play(
-                    board, chess.engine.Limit(time=stockfish_movetime)
-                ).move
+                move = oracle_engine.play(
+                    board, depth=oracle_depth, node_cap=oracle_node_cap
+                )
                 if move is None:
                     finished[i] = True
                     continue

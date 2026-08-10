@@ -4,20 +4,23 @@ import torch
 import torch.nn as nn
 from safetensors.torch import load_file, save_file
 
-from encoding import BOARD_SQUARES, SEQ_LEN, VOCAB_SIZE
+from encoding import BOARD_SIZE, BOARD_SQUARES, SEQ_LEN, VOCAB_SIZE, NUM_OWN_PIECE_TYPES
 
 torch.backends.mha.set_fastpath_enabled(False)
 
-MAX_PIECES = 16
-NUM_RELATIONS = 15 * 15 + 1
+MAX_PIECES = 12
+NUM_RELATIONS = (2 * BOARD_SIZE - 1) ** 2 + 1
 REL_BIAS_SCALE = 4.0
 
 
 def relative_position_ids():
-    ranks, files = torch.arange(BOARD_SQUARES) // 8, torch.arange(BOARD_SQUARES) % 8
-    board_ids = (ranks[:, None] - ranks[None, :] + 7) * 15 + (
-        files[:, None] - files[None, :] + 7
+    ranks, files = (
+        torch.arange(BOARD_SQUARES) // BOARD_SIZE,
+        torch.arange(BOARD_SQUARES) % BOARD_SIZE,
     )
+    board_ids = (ranks[:, None] - ranks[None, :] + BOARD_SIZE - 1) * (
+        2 * BOARD_SIZE - 1
+    ) + (files[:, None] - files[None, :] + BOARD_SIZE - 1)
     ids = torch.full((SEQ_LEN, SEQ_LEN), NUM_RELATIONS - 1, dtype=torch.long)
     ids[:BOARD_SQUARES, :BOARD_SQUARES] = board_ids
     return ids
@@ -62,28 +65,24 @@ class RelativeTransformerEncoder(nn.Module):
 
 
 def piece_gather(board_tokens):
-    own_piece = (board_tokens >= 1) & (board_tokens <= 6)
+    own_piece = (board_tokens >= 1) & (board_tokens <= NUM_OWN_PIECE_TYPES)
     order = torch.argsort(own_piece.long(), dim=-1, descending=True, stable=True)
     piece_squares = order[:, :MAX_PIECES]
     piece_mask = torch.gather(own_piece, 1, piece_squares)
     return piece_squares, piece_mask
 
 
-class ChessNet(nn.Module):
+class PecanNet(nn.Module):
     ranks: torch.Tensor
     files: torch.Tensor
 
-    def __init__(
-        self,
-        d_model=128,
-        nhead=4,
-        enc_layers=2,
-        heatmap_hidden=128,
-    ):
+    def __init__(self, d_model=128, nhead=4, enc_layers=2, heatmap_hidden=128):
         super().__init__()
         self.d_model = d_model
         self.token_emb = nn.Embedding(VOCAB_SIZE, d_model)
-        self.rank_emb, self.file_emb = [nn.Embedding(n, d_model) for n in (8, 8)]
+        self.rank_emb, self.file_emb = [
+            nn.Embedding(BOARD_SIZE, d_model) for _ in range(2)
+        ]
         self.encoder = RelativeTransformerEncoder(
             d_model, nhead, 4 * d_model, enc_layers
         )
@@ -107,9 +106,11 @@ class ChessNet(nn.Module):
         )
         self.legal_from_emb = nn.Linear(BOARD_SQUARES, d_model)
         self.register_buffer(
-            "ranks", torch.arange(BOARD_SQUARES) // 8, persistent=False
+            "ranks", torch.arange(BOARD_SQUARES) // BOARD_SIZE, persistent=False
         )
-        self.register_buffer("files", torch.arange(BOARD_SQUARES) % 8, persistent=False)
+        self.register_buffer(
+            "files", torch.arange(BOARD_SQUARES) % BOARD_SIZE, persistent=False
+        )
         self.register_buffer(
             "bit_positions", torch.arange(BOARD_SQUARES), persistent=False
         )
@@ -155,7 +156,7 @@ class ChessNet(nn.Module):
 
 
 def load_checkpoint(path, device, config):
-    model = ChessNet(
+    model = PecanNet(
         d_model=config.d_model,
         nhead=config.nhead,
         enc_layers=config.enc_layers,
@@ -170,5 +171,5 @@ def save_checkpoint(model, path):
     bad = [k for k, v in model.state_dict().items() if not torch.isfinite(v).all()]
     if bad:
         raise RuntimeError(f"Refusing to save non-finite tensors: {bad[:5]}")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     save_file(model.state_dict(), path)

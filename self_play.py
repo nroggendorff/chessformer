@@ -6,15 +6,15 @@ import os
 import random
 import time
 
-import chess.engine
 import numpy as np
 import torch
 from tqdm import tqdm
 
 from config import amp_dtype, build_scheduler, set_optimizer_lr
 from encoding import INPUT_SIZE
-from evaluation import binomial_z_score, clamp_uci_elo, estimate_elo
-from model import ChessNet
+from evaluation import binomial_z_score, estimate_elo
+from model import PecanNet
+from oracle import Oracle
 from self_play_game import play_games_batched
 from self_play_workers import (
     calibrate_self_play_workers,
@@ -82,8 +82,9 @@ def generate_self_play_data(
     executor=None,
     opponent_model=None,
     opponent_state_dict=None,
-    stockfish_engine=None,
-    stockfish_movetime=0.1,
+    oracle_engine=None,
+    oracle_depth=None,
+    oracle_node_cap=None,
     add_root_noise=True,
     value_smoothing=0.0,
     record_trajectory=True,
@@ -115,8 +116,9 @@ def generate_self_play_data(
                 dirichlet_alpha=config.mcts_dirichlet_alpha,
                 root_noise_frac=config.mcts_root_noise_frac,
                 opponent_model=opponent_model,
-                stockfish_engine=stockfish_engine,
-                stockfish_movetime=stockfish_movetime,
+                oracle_engine=oracle_engine,
+                oracle_depth=oracle_depth or config.self_play_oracle_depth,
+                oracle_node_cap=oracle_node_cap or config.self_play_oracle_node_cap,
                 resign_threshold=config.self_play_resign_threshold,
                 resign_streak=config.self_play_resign_streak,
                 add_root_noise=add_root_noise,
@@ -125,9 +127,9 @@ def generate_self_play_data(
                 include_policy_q_threshold=config.self_play_include_policy_q_threshold,
             )
 
-    if stockfish_engine is not None:
+    if oracle_engine is not None:
         raise NotImplementedError(
-            "stockfish_engine is only supported without multiprocessing"
+            "oracle_engine is only supported without multiprocessing"
         )
 
     max_workers = min(max_workers or mp.cpu_count(), total_games)
@@ -280,7 +282,7 @@ def run_self_play(
             if k in elo_state
         }
 
-        opponent_model = ChessNet(
+        opponent_model = PecanNet(
             d_model=config.d_model,
             nhead=config.nhead,
             enc_layers=config.enc_layers,
@@ -291,24 +293,14 @@ def run_self_play(
             p.requires_grad_(False)
 
         pool = [elo_state["best_state"]]
-        stockfish_engine = None
-        if config.self_play_stockfish_prob > 0 and not use_multiprocessing:
-            try:
-                stockfish_engine = stack.enter_context(
-                    chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
-                )
-                stockfish_engine.configure(
-                    {
-                        "UCI_LimitStrength": True,
-                        "UCI_Elo": clamp_uci_elo(
-                            stockfish_engine, config.self_play_stockfish_elo
-                        ),
-                    }
-                )
-            except (FileNotFoundError, chess.engine.EngineError) as error:
-                print(f"Stockfish self-play opponents disabled: {error}")
-        elif config.self_play_stockfish_prob > 0:
-            print("Stockfish self-play opponents require self_play_max_workers=1")
+        oracle_engine = None
+        if config.self_play_oracle_prob > 0 and not use_multiprocessing:
+            oracle_engine = Oracle(
+                depth=config.self_play_oracle_depth,
+                node_cap=config.self_play_oracle_node_cap,
+            )
+        elif config.self_play_oracle_prob > 0:
+            print("Oracle self-play opponents require self_play_max_workers=1")
 
         pbar = tqdm(
             range(config.self_play_iterations),
@@ -340,14 +332,14 @@ def run_self_play(
             roll = random.random()
             self_threshold = config.self_play_pool_self_prob
             anchor_threshold = self_threshold + config.self_play_anchor_prob
-            stockfish_threshold = anchor_threshold + config.self_play_stockfish_prob
-            use_stockfish = (
-                stockfish_engine is not None
-                and anchor_threshold <= roll < stockfish_threshold
+            oracle_threshold = anchor_threshold + config.self_play_oracle_prob
+            use_oracle = (
+                oracle_engine is not None
+                and anchor_threshold <= roll < oracle_threshold
             )
             opponent_state = (
                 None
-                if roll < self_threshold or use_stockfish
+                if roll < self_threshold or use_oracle
                 else (
                     elo_state["best_state"]
                     if roll < anchor_threshold
@@ -371,8 +363,7 @@ def run_self_play(
                 executor=executor,
                 opponent_model=None if opponent_state is None else opponent_model,
                 opponent_state_dict=opponent_state,
-                stockfish_engine=stockfish_engine if use_stockfish else None,
-                stockfish_movetime=config.self_play_stockfish_movetime,
+                oracle_engine=oracle_engine if use_oracle else None,
                 value_smoothing=config.self_play_value_smoothing,
             )
             replay.extend_rl(samples)
@@ -391,9 +382,7 @@ def run_self_play(
                     executor=executor,
                 )
                 z = binomial_z_score(
-                    h2h["learner_wins"],
-                    h2h["drawn"],
-                    h2h["games"] - h2h["unresolved"],
+                    h2h["learner_wins"], h2h["drawn"], h2h["games"] - h2h["unresolved"]
                 )
                 record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
                 if z > config.self_play_promote_z:
@@ -456,8 +445,7 @@ def run_self_play(
                     < start_elo - config.self_play_elo_drop_rollback
                 ):
                     pbar.write(
-                        f"[iter {it + 1}] elo_ema dropped "
-                        f"{start_elo - elo_state['elo_ema']:.0f} below start "
+                        f"[iter {it + 1}] elo_ema dropped {start_elo - elo_state['elo_ema']:.0f} below start "
                         f"({start_elo:.0f}); rolling back to best"
                     )
                     rollback_to_best(it)
@@ -467,9 +455,7 @@ def run_self_play(
                 {"elo": f"{elo_state['elo_ema']:.0f}"} if "elo_ema" in elo_state else {}
             )
             finish_postfix = {
-                "resolved": (
-                    f"{(sp_stats['decisive'] + sp_stats['drawn']) / sp_stats['games']:.0%}"
-                ),
+                "resolved": f"{(sp_stats['decisive'] + sp_stats['drawn']) / sp_stats['games']:.0%}",
                 "decisive": f"{sp_stats['decisive'] / sp_stats['games']:.0%}",
             }
 
@@ -580,8 +566,7 @@ if __name__ == "__main__":
             scheduler = build_scheduler(opt, total_steps)
             print(
                 "Prior LR schedule had already completed — starting a fresh "
-                "schedule on top of the existing weights instead of resuming "
-                "a spent one"
+                "schedule on top of the existing weights instead of resuming a spent one"
             )
         else:
             print("Resumed optimizer and LR schedule state from prior run")

@@ -1,39 +1,29 @@
-import atexit
 import concurrent.futures
 import gc
 import multiprocessing as mp
 import random
 
-import chess.engine
 import torch
 
 from config import build_model, build_optimizer, build_scaler, set_optimizer_lr
-from evaluation import clamp_uci_elo
-from model import ChessNet
+from model import PecanNet
+from oracle import Oracle
 from replay_buffer import DualRingBuffer
 from self_play import generate_self_play_data, warmup_train_model
 from state_utils import from_numpy_state, load_state, to_numpy_state
 from training import train_batch
 
 _MODEL = _TRAIN_MODEL = _OPT = _SCALER = _OPPONENT = _REPLAY = _DEVICE = None
-_STOCKFISH = None
-
-
-def _stockfish_shutdown():
-    if _STOCKFISH is not None:
-        try:
-            _STOCKFISH.quit()
-        except Exception:
-            pass
+_ORACLE = None
 
 
 def worker_init(device_type, config):
-    global _MODEL, _TRAIN_MODEL, _OPT, _SCALER, _OPPONENT, _REPLAY, _DEVICE, _STOCKFISH
+    global _MODEL, _TRAIN_MODEL, _OPT, _SCALER, _OPPONENT, _REPLAY, _DEVICE, _ORACLE
     _DEVICE = torch.device(device_type)
     _MODEL, _TRAIN_MODEL = build_model(config, _DEVICE, compile_model=False)
     _OPT = set_optimizer_lr(build_optimizer(_MODEL, config), config.self_play_lr)
     _SCALER = build_scaler(_DEVICE)
-    _OPPONENT = ChessNet(
+    _OPPONENT = PecanNet(
         d_model=config.d_model,
         nhead=config.nhead,
         enc_layers=config.enc_layers,
@@ -46,15 +36,11 @@ def worker_init(device_type, config):
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
     warmup_train_model(_MODEL, _TRAIN_MODEL, _OPT, _SCALER, config, _DEVICE)
-    if config.self_play_stockfish_prob > 0:
-        _STOCKFISH = chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
-        _STOCKFISH.configure(
-            {
-                "UCI_LimitStrength": True,
-                "UCI_Elo": clamp_uci_elo(_STOCKFISH, config.population_stockfish_elo),
-            }
+    if config.self_play_oracle_prob > 0:
+        _ORACLE = Oracle(
+            depth=config.population_oracle_depth,
+            node_cap=config.population_oracle_node_cap,
         )
-        atexit.register(_stockfish_shutdown)
 
 
 def worker_report_cuda_mb():
@@ -79,8 +65,7 @@ def calibrate_population_workers(device, config):
     budget_mb = free_bytes / (1024**2) - config.population_memory_safety_margin_mb
     workers = max(1, min(config.population_size, int(budget_mb // worker_mb)))
     print(
-        f"Population self-play workers: {workers} "
-        f"(~{worker_mb:.0f} MB/worker, {budget_mb:.0f} MB budget)"
+        f"Population self-play workers: {workers} (~{worker_mb:.0f} MB/worker, {budget_mb:.0f} MB budget)"
     )
     return workers
 
@@ -95,22 +80,22 @@ def worker_train_contender(state, opt_state, opponent_states, anchor_state, conf
     losses, totals = [], {"games": 0, "decisive": 0, "drawn": 0, "unresolved": 0}
     for _ in range(config.population_generation_iters):
         roll = random.random()
-        stockfish_thresh = (
+        oracle_thresh = (
             config.self_play_pool_self_prob
             + config.self_play_anchor_prob
-            + config.self_play_stockfish_prob
+            + config.self_play_oracle_prob
         )
-        use_stockfish = (
-            _STOCKFISH is not None
+        use_oracle = (
+            _ORACLE is not None
             and config.self_play_pool_self_prob + config.self_play_anchor_prob
             <= roll
-            < stockfish_thresh
+            < oracle_thresh
         )
         if roll < config.self_play_pool_self_prob:
             opponent_state = None
         elif roll < config.self_play_pool_self_prob + config.self_play_anchor_prob:
             opponent_state = from_numpy_state(anchor_state)
-        elif use_stockfish:
+        elif use_oracle:
             opponent_state = None
         elif opponent_states:
             opponent_state = from_numpy_state(random.choice(opponent_states))
@@ -130,8 +115,7 @@ def worker_train_contender(state, opt_state, opponent_states, anchor_state, conf
             False,
             opponent_model=None if opponent_state is None else _OPPONENT,
             opponent_state_dict=opponent_state,
-            stockfish_engine=_STOCKFISH if use_stockfish else None,
-            stockfish_movetime=config.population_stockfish_movetime,
+            oracle_engine=_ORACLE if use_oracle else None,
             value_smoothing=config.self_play_value_smoothing,
         )
         _REPLAY.extend_rl(samples)

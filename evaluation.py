@@ -1,36 +1,54 @@
-import atexit
 import concurrent.futures
-import contextlib
 import math
 import multiprocessing as mp
+import random
 
-import chess
-import chess.engine
-
+import pecan as pc
 from data_generation import pin_to_next_cpu
+from oracle import Oracle
 from tree_search import mcts_policy_step
 
-ELO_EVAL_ANCHOR_SPREAD = (-200, 0, 200)
-EVAL_OPENING_LINES = (
-    ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "e1g1", "f8c5"),
-    ("d2d4", "d7d5", "c2c4", "e7e6", "b1c3", "g8f6", "c1g5", "f8e7"),
-    ("c2c4", "e7e5", "b1c3", "g8f6", "g2g3", "d7d5", "c4d5", "f6d5"),
-    ("g1f3", "d7d5", "d2d4", "g8f6", "c2c4", "e7e6", "b1c3", "f8b4"),
-    ("e2e4", "c7c5", "g1f3", "d7d6", "d2d4", "c5d4", "f3d4", "g8f6"),
-    ("d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "f8g7", "e2e4", "d7d6"),
-)
+ELO_EVAL_ANCHOR_SPREAD = (-1, 0, 1)
 
-_EVAL_ENGINE = None
+DEPTH_RATING_TABLE = [
+    (1, 400),
+    (2, 700),
+    (3, 1000),
+    (4, 1300),
+    (5, 1600),
+    (6, 1900),
+    (7, 2200),
+    (8, 2500),
+]
 
-
-def clamp_uci_elo(engine, elo):
-    option = engine.options.get("UCI_Elo")
-    return elo if option is None else max(option.min, min(option.max, elo))
+_EVAL_ORACLE = None
 
 
-def opening_moves_for_game(game_index, plies=None):
-    line = EVAL_OPENING_LINES[game_index % len(EVAL_OPENING_LINES)]
-    return line if plies is None else line[: max(0, plies)]
+def rating_for_depth(depth):
+    for d, rating in DEPTH_RATING_TABLE:
+        if d == depth:
+            return rating
+    return DEPTH_RATING_TABLE[-1][1]
+
+
+def nearest_depth_index(rating):
+    return min(
+        range(len(DEPTH_RATING_TABLE)),
+        key=lambda i: abs(DEPTH_RATING_TABLE[i][1] - rating),
+    )
+
+
+def random_opening_moves(game_index, plies):
+    rng = random.Random(game_index)
+    board = pc.Board()
+    moves = []
+    for _ in range(plies):
+        if board.outcome() is not None:
+            break
+        move = rng.choice(board.legal_moves)
+        board.push(move)
+        moves.append(move)
+    return moves
 
 
 def expected_score(rating, opponent_rating):
@@ -83,22 +101,21 @@ def rating_standard_error(rating, calibrated_results, max_se=600.0):
 
 
 def play_eval_game(
-    engine,
+    oracle,
     model,
     device,
     config,
     model_is_white,
     max_moves,
-    limit,
+    oracle_depth,
     mcts_simulations=None,
     opening_moves=(),
-    adjudication_depth=10,
+    adjudication_depth=6,
 ):
-    board = chess.Board()
-    opening_moves = opening_moves[: max(0, max_moves)]
+    board = pc.Board()
     for move in opening_moves:
-        board.push_uci(move)
-    mover = chess.WHITE if model_is_white else chess.BLACK
+        board.push(move)
+    mover = pc.WHITE if model_is_white else pc.BLACK
     plies = len(opening_moves)
     for _ in range(max(0, max_moves - plies)):
         if board.is_game_over(claim_draw=True):
@@ -117,93 +134,79 @@ def play_eval_game(
             )
             board.push(moves[0])
         else:
-            board.push(engine.play(board, limit).move)
+            board.push(oracle.play(board, depth=oracle_depth))
         plies += 1
 
     outcome = board.outcome(claim_draw=True)
     timed_out = outcome is None
     if timed_out:
-        cp = (
-            engine.analyse(board, chess.engine.Limit(depth=adjudication_depth))["score"]
-            .pov(mover)
-            .score(mate_score=10000)
-        )
+        raw = oracle.score_cp(board, depth=adjudication_depth)
+        cp = raw if board.turn == mover else -raw
         score = 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
     else:
         score = 0.5 if outcome.winner is None else float(outcome.winner == mover)
     return {"score": score, "plies": plies, "timed_out": timed_out}
 
 
-def _eval_worker_shutdown():
-    if _EVAL_ENGINE is not None:
-        try:
-            _EVAL_ENGINE.quit()
-        except Exception:
-            pass
-
-
-def eval_worker_init(engine_path, elo, cpu_counter, cpu_lock):
-    global _EVAL_ENGINE
+def eval_worker_init(cpu_counter, cpu_lock):
+    global _EVAL_ORACLE
     pin_to_next_cpu(cpu_counter, cpu_lock)
-    _EVAL_ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
-    _EVAL_ENGINE.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
-    atexit.register(_eval_worker_shutdown)
+    _EVAL_ORACLE = Oracle()
 
 
-def eval_worker_play_move(fen, movetime):
-    return _EVAL_ENGINE.play(
-        chess.Board(fen), chess.engine.Limit(time=movetime)
-    ).move.uci()
+def eval_worker_play_move(fen, depth):
+    board = pc.Board(fen)
+    return _EVAL_ORACLE.play(board, depth=depth).uci()
 
 
-def eval_worker_timeout_score(fen, mover_is_white, depth=10):
-    cp = (
-        _EVAL_ENGINE.analyse(chess.Board(fen), chess.engine.Limit(depth=depth))["score"]
-        .pov(chess.WHITE if mover_is_white else chess.BLACK)
-        .score(mate_score=10000)
-    )
+def eval_worker_timeout_score(fen, mover_is_white, depth=6):
+    board = pc.Board(fen)
+    raw = _EVAL_ORACLE.score_cp(board, depth=depth)
+    cp = raw if board.turn == (pc.WHITE if mover_is_white else pc.BLACK) else -raw
     return 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
 
 
 def play_all_anchor_games(
-    engine_path,
     model,
     device,
     config,
-    anchors,
+    anchor_depths,
     games_per_anchor,
     max_moves,
-    movetime,
     max_workers,
     mcts_simulations=None,
     random_opening_plies=0,
-    adjudication_depth=10,
+    adjudication_depth=6,
 ):
-    with chess.engine.SimpleEngine.popen_uci(engine_path) as probe_engine:
-        elos = [clamp_uci_elo(probe_engine, anchor) for anchor in anchors]
-
     ctx = mp.get_context("spawn")
-    total_games = games_per_anchor * len(elos)
-    boards = [chess.Board() for _ in range(total_games)]
+    total_games = games_per_anchor * len(anchor_depths)
+    boards = [pc.Board() for _ in range(total_games)]
     model_is_white = [i % 2 == 0 for i in range(total_games)]
     anchor_of_game = [i // games_per_anchor for i in range(total_games)]
     finished = [False] * total_games
     plies = [0] * total_games
 
-    model.eval()
-    with contextlib.ExitStack() as stack:
-        pools = [
-            stack.enter_context(
-                concurrent.futures.ProcessPoolExecutor(
-                    max_workers=min(max(1, max_workers // len(elos)), games_per_anchor),
-                    mp_context=ctx,
-                    initializer=eval_worker_init,
-                    initargs=(engine_path, elo, ctx.Value("i", 0), ctx.Lock()),
-                )
-            )
-            for elo in elos
-        ]
+    if random_opening_plies > 0:
+        for i in range(total_games):
+            for move in random_opening_moves(i, random_opening_plies):
+                boards[i].push(move)
+                plies[i] += 1
+                if boards[i].is_game_over(claim_draw=True):
+                    finished[i] = True
 
+    model.eval()
+    pools = [
+        concurrent.futures.ProcessPoolExecutor(
+            max_workers=min(
+                max(1, max_workers // len(anchor_depths)), games_per_anchor
+            ),
+            mp_context=ctx,
+            initializer=eval_worker_init,
+            initargs=(ctx.Value("i", 0), ctx.Lock()),
+        )
+        for _ in anchor_depths
+    ]
+    try:
         for _ in range(max_moves):
             active = [i for i in range(total_games) if not finished[i]]
             if not active:
@@ -212,41 +215,35 @@ def play_all_anchor_games(
             learner_idx = [
                 i
                 for i in active
-                if boards[i].turn == (chess.WHITE if model_is_white[i] else chess.BLACK)
+                if boards[i].turn == (pc.WHITE if model_is_white[i] else pc.BLACK)
             ]
             engine_idx = [i for i in active if i not in learner_idx]
 
             if learner_idx:
-                warm = [i for i in learner_idx if plies[i] < random_opening_plies]
-                warm_set = set(warm)
-                for subset, temp in (
-                    (warm, 1.0),
-                    ([i for i in learner_idx if i not in warm_set], 0.0),
-                ):
-                    if not subset:
-                        continue
-                    moves, _ = mcts_policy_step(
-                        [boards[i] for i in subset],
-                        model,
-                        device,
-                        num_simulations=mcts_simulations
-                        or config.inference_mcts_simulations,
-                        sims_per_wave=config.mcts_sims_per_wave,
-                        c_puct=config.mcts_c_puct,
-                        temperature=temp,
-                        target_batch_size=config.mcts_target_batch_size,
-                        max_batch_size=config.mcts_max_batch_size,
-                    )
-                    for i, move in zip(subset, moves):
-                        boards[i].push(move)
-                        plies[i] += 1
-                        if boards[i].is_game_over(claim_draw=True):
-                            finished[i] = True
+                moves, _ = mcts_policy_step(
+                    [boards[i] for i in learner_idx],
+                    model,
+                    device,
+                    num_simulations=mcts_simulations
+                    or config.inference_mcts_simulations,
+                    sims_per_wave=config.mcts_sims_per_wave,
+                    c_puct=config.mcts_c_puct,
+                    temperature=0.0,
+                    target_batch_size=config.mcts_target_batch_size,
+                    max_batch_size=config.mcts_max_batch_size,
+                )
+                for i, move in zip(learner_idx, moves):
+                    boards[i].push(move)
+                    plies[i] += 1
+                    if boards[i].is_game_over(claim_draw=True):
+                        finished[i] = True
 
             if engine_idx:
                 futures = {
                     i: pools[anchor_of_game[i]].submit(
-                        eval_worker_play_move, boards[i].fen(), movetime
+                        eval_worker_play_move,
+                        boards[i].fen(),
+                        anchor_depths[anchor_of_game[i]],
                     )
                     for i in engine_idx
                 }
@@ -269,41 +266,57 @@ def play_all_anchor_games(
         }
 
         results = [
-            {"score": 0.0, "games": games_per_anchor, "level": {"elo": elo}}
-            for elo in elos
+            {
+                "score": 0.0,
+                "games": games_per_anchor,
+                "level": {"elo": rating_for_depth(d), "depth": d},
+            }
+            for d in anchor_depths
         ]
         for i, outcome in enumerate(outcomes):
-            mover = chess.WHITE if model_is_white[i] else chess.BLACK
+            mover = pc.WHITE if model_is_white[i] else pc.BLACK
             score = (
                 timeout_futures[i].result()
                 if outcome is None
                 else (0.5 if outcome.winner is None else float(outcome.winner == mover))
             )
             results[anchor_of_game[i]]["score"] += score
+    finally:
+        for pool in pools:
+            pool.shutdown(wait=False)
 
     return results
 
 
 def adaptive_eval_anchors(config, state):
-    center = state.get("last_elo", state.get("elo_ema", config.elo_eval_anchor))
-    center = int(round(center / 50.0) * 50)
-    return [center + spread for spread in ELO_EVAL_ANCHOR_SPREAD]
+    center = state.get(
+        "last_elo",
+        state.get("elo_ema", rating_for_depth(config.self_play_oracle_depth)),
+    )
+    idx = nearest_depth_index(center)
+    depths = sorted(
+        {
+            DEPTH_RATING_TABLE[max(0, min(len(DEPTH_RATING_TABLE) - 1, idx + spread))][
+                0
+            ]
+            for spread in ELO_EVAL_ANCHOR_SPREAD
+        }
+    )
+    return depths
 
 
 def estimate_elo(model, device, config, state):
     model.eval()
-    anchors = adaptive_eval_anchors(config, state)
-    games_per_anchor = max(2, config.elo_eval_games // len(anchors))
+    anchor_depths = adaptive_eval_anchors(config, state)
+    games_per_anchor = max(2, config.elo_eval_games // len(anchor_depths))
 
     results = play_all_anchor_games(
-        config.stockfish_path,
         model,
         device,
         config,
-        anchors,
+        anchor_depths,
         games_per_anchor,
         config.elo_eval_max_moves,
-        config.elo_eval_movetime,
         config.max_workers,
         mcts_simulations=config.elo_eval_mcts_simulations,
         random_opening_plies=config.elo_eval_random_plies,

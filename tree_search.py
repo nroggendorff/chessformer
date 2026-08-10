@@ -156,9 +156,7 @@ def _backup(path, value):
 def _evaluate_boards(boards, model, device):
     legal_moves = [list(b.legal_moves) for b in boards]
     board_inputs = torch.tensor(
-        [board_to_input(b) for b in boards],
-        dtype=torch.long,
-        device=device,
+        [board_to_input(b) for b in boards], dtype=torch.long, device=device
     )
     heatmap, value = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
@@ -346,10 +344,7 @@ def mcts_policy_step(
     live_idx = [i for i, m in enumerate(moves) if m is not None]
     if any(moves[i].promotion is not None for i in live_idx):
         resolved = resolve_promotions(
-            [boards[i] for i in live_idx],
-            [moves[i] for i in live_idx],
-            model,
-            device,
+            [boards[i] for i in live_idx], [moves[i] for i in live_idx], model, device
         )
         for i, move in zip(live_idx, resolved):
             moves[i] = move
