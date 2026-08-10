@@ -91,8 +91,8 @@ if __name__ == "__main__":
         f"Training for {total_steps} steps ({config.pretrain_epochs} epochs over {len(replay.pretrain_buf)} examples)"
     )
     scheduler = build_scheduler(opt, total_steps)
-    if resuming and os.path.exists(optimizer_state_path(checkpoint_path)):
-        load_optimizer_state(opt, scheduler, checkpoint_path)
+    if resuming and os.path.exists(optimizer_state_path(checkpoint_path, "pretrain")):
+        load_optimizer_state(opt, scheduler, checkpoint_path, "pretrain")
         if scheduler.last_epoch >= total_steps:
             opt.state.clear()
             scheduler = build_scheduler(opt, total_steps)
@@ -123,4 +123,4 @@ if __name__ == "__main__":
         total_steps,
     )
     save_checkpoint(model, checkpoint_path)
-    save_optimizer_state(opt, scheduler, checkpoint_path)
+    save_optimizer_state(opt, scheduler, checkpoint_path, "pretrain")

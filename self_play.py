@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from config import amp_dtype, build_scheduler
+from config import amp_dtype, build_scheduler, set_optimizer_lr
 from encoding import INPUT_SIZE
 from evaluation import binomial_z_score, clamp_uci_elo, estimate_elo
 from model import ChessNet
@@ -274,6 +274,11 @@ def run_self_play(
         elo_state["best_state"] = {
             k: v.cpu().clone() for k, v in model.state_dict().items()
         }
+        best_elo_state = {
+            k: elo_state[k]
+            for k in ("elo_ema", "last_elo", "last_se")
+            if k in elo_state
+        }
 
         opponent_model = ChessNet(
             d_model=config.d_model,
@@ -322,11 +327,14 @@ def run_self_play(
             nonlocal scheduler
             model.load_state_dict(elo_state["best_state"])
             opt.state.clear()
+            set_optimizer_lr(opt, config.self_play_lr)
             scheduler = build_scheduler(
                 opt,
                 config.self_play_gradient_steps
                 * max(1, config.self_play_iterations - it),
             )
+            replay.reset_rl()
+            elo_state.update(best_elo_state)
 
         for it in pbar:
             roll = random.random()
@@ -408,6 +416,12 @@ def run_self_play(
                                 model, device, config, elo_state
                             )
                             last_elo_iter = it + 1
+                        best_elo_state = {
+                            k: elo_state[k]
+                            for k in ("elo_ema", "last_elo", "last_se")
+                            if k in elo_state
+                        }
+                        start_elo = best_elo_state["elo_ema"]
                         pbar.write(
                             f"[iter {it + 1}] promoted: scored {record} vs best "
                             f"(z={z:.2f}, confirmed {promote_streak}/{config.self_play_promote_confirm}, "
@@ -558,10 +572,11 @@ if __name__ == "__main__":
     scaler = build_scaler(device)
     total_steps = config.self_play_iterations * config.self_play_gradient_steps
     scheduler = build_scheduler(opt, total_steps)
-    if resuming and os.path.exists(optimizer_state_path(checkpoint_path)):
-        load_optimizer_state(opt, scheduler, checkpoint_path)
+    if resuming and os.path.exists(optimizer_state_path(checkpoint_path, "self_play")):
+        load_optimizer_state(opt, scheduler, checkpoint_path, "self_play")
         if scheduler.last_epoch >= total_steps:
             opt.state.clear()
+            set_optimizer_lr(opt, config.self_play_lr)
             scheduler = build_scheduler(opt, total_steps)
             print(
                 "Prior LR schedule had already completed — starting a fresh "
@@ -572,9 +587,8 @@ if __name__ == "__main__":
             print("Resumed optimizer and LR schedule state from prior run")
     elif resuming:
         print(
-            "No saved optimizer state found — this run will restart the LR warmup "
-            "and Adam moments against an already-trained checkpoint, which can "
-            "degrade it. Consider restoring from a backup instead."
+            "No self-play optimizer state found; starting a fresh self-play "
+            "optimizer and LR schedule from the checkpoint weights"
         )
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
@@ -584,4 +598,4 @@ if __name__ == "__main__":
         model, train_model, opt, scaler, scheduler, replay, device, config, {}
     )
     save_checkpoint(model, checkpoint_path)
-    save_optimizer_state(opt, scheduler, checkpoint_path)
+    save_optimizer_state(opt, scheduler, checkpoint_path, "self_play")

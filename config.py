@@ -232,6 +232,7 @@ def build_optimizer(model, config):
 def set_optimizer_lr(opt, lr):
     for group in opt.param_groups:
         group["lr"] = lr
+        group["initial_lr"] = lr
     return opt
 
 
@@ -259,18 +260,18 @@ def build_scheduler(opt, total_steps):
     )
 
 
-def optimizer_state_path(checkpoint_path):
-    return checkpoint_path + ".opt.pt"
+def optimizer_state_path(checkpoint_path, phase=None):
+    return checkpoint_path + (f".{phase}.opt.pt" if phase is not None else ".opt.pt")
 
 
-def save_optimizer_state(opt, scheduler, checkpoint_path):
+def save_optimizer_state(opt, scheduler, checkpoint_path, phase=None):
     torch.save(
         {"optimizer": opt.state_dict(), "scheduler": scheduler.state_dict()},
-        optimizer_state_path(checkpoint_path),
+        optimizer_state_path(checkpoint_path, phase),
     )
 
 
-def load_optimizer_state(opt, scheduler, checkpoint_path):
-    state = torch.load(optimizer_state_path(checkpoint_path), map_location="cpu")
+def load_optimizer_state(opt, scheduler, checkpoint_path, phase=None):
+    state = torch.load(optimizer_state_path(checkpoint_path, phase), map_location="cpu")
     opt.load_state_dict(state["optimizer"])
     scheduler.load_state_dict(state["scheduler"])
