@@ -58,6 +58,7 @@ def play_games_batched(
     value_smoothing=0.0,
     record_trajectory=True,
     include_policy_q_threshold=1.1,
+    opening_moves_per_game=None,
 ):
     model.eval()
     if opponent_model is not None:
@@ -65,6 +66,10 @@ def play_games_batched(
     self_play_mode = opponent_model is None and stockfish_engine is None
 
     boards = [chess.Board() for _ in range(num_games)]
+    if opening_moves_per_game is not None:
+        for board, moves in zip(boards, opening_moves_per_game):
+            for uci in moves:
+                board.push_uci(uci)
     roots = [MCTSNode(board.copy()) for board in boards]
     learner_color = [
         chess.WHITE if random.random() < 0.5 else chess.BLACK for _ in range(num_games)

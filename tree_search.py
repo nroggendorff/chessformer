@@ -221,8 +221,10 @@ def run_mcts(
         ):
             root.legal_moves = lm
             expand_node(root, hm_row, ps_row, pm_row)
-            if add_root_noise:
-                add_root_dirichlet_noise(root, root_dirichlet_alpha, root_noise_frac)
+
+    if add_root_noise:
+        for root in live_roots:
+            add_root_dirichlet_noise(root, root_dirichlet_alpha, root_noise_frac)
 
     effective_wave = (
         sims_per_wave

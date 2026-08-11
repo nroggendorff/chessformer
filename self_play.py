@@ -13,7 +13,12 @@ from tqdm import tqdm
 
 from config import amp_dtype, build_scheduler, set_optimizer_lr
 from encoding import INPUT_SIZE
-from evaluation import binomial_z_score, clamp_uci_elo, estimate_elo
+from evaluation import (
+    binomial_z_score,
+    clamp_uci_elo,
+    estimate_elo,
+    opening_moves_for_game,
+)
 from model import ChessNet
 from self_play_game import play_games_batched
 from self_play_workers import (
@@ -89,6 +94,7 @@ def generate_self_play_data(
     record_trajectory=True,
     mcts_simulations=None,
     opponent_mcts_simulations=None,
+    opening_moves_per_game=None,
 ):
     mcts_simulations = mcts_simulations or config.self_play_mcts_simulations
     opponent_mcts_simulations = (
@@ -123,6 +129,7 @@ def generate_self_play_data(
                 value_smoothing=value_smoothing,
                 record_trajectory=record_trajectory,
                 include_policy_q_threshold=config.self_play_include_policy_q_threshold,
+                opening_moves_per_game=opening_moves_per_game,
             )
 
     if stockfish_engine is not None:
@@ -137,6 +144,7 @@ def generate_self_play_data(
         [total_games % chunk] if total_games % chunk else []
     )
     base_seed = time.time_ns() % (2**32 - len(counts))
+    offsets = [sum(counts[:i]) for i in range(len(counts))]
 
     def submit(pool):
         return [
@@ -167,8 +175,13 @@ def generate_self_play_data(
                 value_smoothing,
                 record_trajectory,
                 config.self_play_include_policy_q_threshold,
+                (
+                    opening_moves_per_game[offset : offset + count]
+                    if opening_moves_per_game is not None
+                    else None
+                ),
             )
-            for i, count in enumerate(counts)
+            for i, (count, offset) in enumerate(zip(counts, offsets))
         ]
 
     if executor is not None:
@@ -222,6 +235,9 @@ def head_to_head_score(
         record_trajectory=False,
         mcts_simulations=config.inference_mcts_simulations,
         opponent_mcts_simulations=config.inference_mcts_simulations,
+        opening_moves_per_game=[
+            opening_moves_for_game(i, plies=6) for i in range(games)
+        ],
     )
     return stats
 
@@ -447,7 +463,6 @@ def run_self_play(
                         rollback_to_best(it)
                         bad_evals = 0
                 else:
-                    promote_streak = 0
                     bad_evals = 0
 
                 if (
