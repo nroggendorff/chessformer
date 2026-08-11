@@ -12,6 +12,22 @@ MAX_PIECES = 16
 NUM_RELATIONS = 15 * 15 + 1
 REL_BIAS_SCALE = 4.0
 
+VALUE_BINS = 41
+VALUE_MIN = -1000.0
+VALUE_MAX = 1000.0
+VALUE_SCALE = 400.0
+
+
+def two_hot(scores, bin_centers):
+    scores = scores.clamp(bin_centers[0], bin_centers[-1])
+    idx = (torch.bucketize(scores, bin_centers) - 1).clamp(0, len(bin_centers) - 2)
+    lo, hi = bin_centers[idx], bin_centers[idx + 1]
+    w_hi = ((scores - lo) / (hi - lo)).clamp(0, 1)
+    target = torch.zeros(*scores.shape, len(bin_centers), device=scores.device)
+    target.scatter_(-1, idx.unsqueeze(-1), (1 - w_hi).unsqueeze(-1))
+    target.scatter_add_(-1, (idx + 1).unsqueeze(-1), w_hi.unsqueeze(-1))
+    return target
+
 
 def relative_position_ids():
     ranks, files = torch.arange(BOARD_SQUARES) // 8, torch.arange(BOARD_SQUARES) % 8
@@ -72,6 +88,7 @@ def piece_gather(board_tokens):
 class ChessNet(nn.Module):
     ranks: torch.Tensor
     files: torch.Tensor
+    value_bins: torch.Tensor
 
     def __init__(
         self,
@@ -98,7 +115,12 @@ class ChessNet(nn.Module):
         self.value_mlp = nn.Sequential(
             nn.Linear(d_model, heatmap_hidden),
             nn.GELU(),
-            nn.Linear(heatmap_hidden, 1),
+            nn.Linear(heatmap_hidden, VALUE_BINS),
+        )
+        self.register_buffer(
+            "value_bins",
+            torch.linspace(VALUE_MIN, VALUE_MAX, VALUE_BINS),
+            persistent=False,
         )
         self.legal_to_mlp = nn.Sequential(
             nn.Linear(BOARD_SQUARES, heatmap_hidden),
@@ -140,9 +162,13 @@ class ChessNet(nn.Module):
             self.value_key(encoded) @ self.value_query / self.d_model**0.5, dim=1
         )
         pooled = (attn.unsqueeze(-1) * self.value_value(encoded)).sum(dim=1)
-        value = self.value_mlp(pooled).squeeze(-1).tanh()
+        value_logits = self.value_mlp(pooled)
+        expected_score = (torch.softmax(value_logits, dim=-1) * self.value_bins).sum(
+            dim=-1
+        )
+        value = torch.tanh(expected_score / VALUE_SCALE)
         if value_only:
-            return None, value
+            return None, value, value_logits
 
         piece_squares, _ = piece_gather(board_tokens)
         piece_embeds = torch.gather(
@@ -151,7 +177,7 @@ class ChessNet(nn.Module):
             piece_squares.unsqueeze(-1).expand(-1, -1, self.d_model),
         )
         heatmap = self.heatmap_mlp(piece_embeds)
-        return heatmap, value
+        return heatmap, value, value_logits
 
 
 def load_checkpoint(path, device, config):

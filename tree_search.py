@@ -160,7 +160,7 @@ def _evaluate_boards(boards, model, device):
         dtype=torch.long,
         device=device,
     )
-    heatmap, value = model(board_inputs)
+    heatmap, value, _ = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
     return (
         heatmap.float().cpu().numpy(),

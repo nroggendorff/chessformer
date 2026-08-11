@@ -18,7 +18,7 @@ def _bootstrap_timeout_values(boards, indices, model, device):
         dtype=torch.long,
         device=device,
     )
-    _, values = model(board_inputs, value_only=True)
+    _, values, _ = model(board_inputs, value_only=True)
     return dict(zip(indices, values.float().cpu().tolist()))
 
 

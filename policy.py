@@ -35,7 +35,7 @@ def resolve_promotions(boards, moves, model, device):
         for b in promo_idx
         for variant in variants_by_idx[b]
     ]
-    _, variant_values = model(
+    _, variant_values, _ = model(
         torch.tensor(variant_inputs, dtype=torch.long, device=device), value_only=True
     )
     variant_values = variant_values.cpu()
@@ -151,7 +151,7 @@ def batched_policy_step(
         dtype=torch.long,
         device=device,
     )
-    heatmap, value = model(board_inputs)
+    heatmap, value, _ = model(board_inputs)
     piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
     piece_squares, piece_mask = piece_squares.cpu().numpy(), piece_mask.cpu().numpy()
 
@@ -192,7 +192,7 @@ def batched_policy_step(
     if not child_inputs:
         raise ValueError("batched_policy_step called with no legal moves available")
 
-    _, child_values = model(
+    _, child_values, _ = model(
         torch.tensor(child_inputs, dtype=torch.long, device=device), value_only=True
     )
     child_values = child_values.cpu()

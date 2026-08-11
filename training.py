@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from config import amp_dtype
 from encoding import BOARD_SQUARES
-from model import MAX_PIECES, piece_gather
+from model import MAX_PIECES, VALUE_SCALE, piece_gather, two_hot
 
 
 def _piece_targets_and_mask(piece_squares, samples):
@@ -55,7 +55,7 @@ def train_batch(model, opt, scaler, samples, device, entropy_coef=0.01):
 
     opt.zero_grad(set_to_none=True)
     with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
-        heatmaps, values = model(boards)
+        heatmaps, _, value_logits = model(boards)
         masked = heatmaps.masked_fill(~legal_mask, -1e4)
         log_probs = F.log_softmax(masked, dim=-1).clamp(min=-20.0)
         per_piece_log_prob = (target_policy * log_probs).sum(dim=-1)
@@ -69,8 +69,11 @@ def train_batch(model, opt, scaler, samples, device, entropy_coef=0.01):
         piece_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
         entropy = ((piece_entropy * active).sum(dim=-1) / active_count).mean()
 
+        target_scores = torch.atanh(target_values.clamp(-0.999, 0.999)) * VALUE_SCALE
+        value_target_dist = two_hot(target_scores, model.value_bins)
+        value_log_probs = F.log_softmax(value_logits, dim=-1)
         value_loss = (
-            value_weights * F.mse_loss(values, target_values, reduction="none")
+            value_weights * -(value_target_dist * value_log_probs).sum(dim=-1)
         ).mean()
         loss = policy_loss + 0.5 * value_loss - entropy_coef * entropy
 
