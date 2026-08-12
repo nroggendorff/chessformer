@@ -69,8 +69,11 @@ def train_batch(model, opt, scaler, samples, device, entropy_coef=0.01):
         piece_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
         entropy = ((piece_entropy * active).sum(dim=-1) / active_count).mean()
 
-        target_scores = torch.atanh(target_values.clamp(-0.999, 0.999)) * VALUE_SCALE
-        value_target_dist = two_hot(target_scores, model.value_bins)
+        with torch.no_grad():
+            target_scores = (
+                torch.atanh(target_values.clamp(-0.999, 0.999)) * VALUE_SCALE
+            )
+            value_target_dist = two_hot(target_scores, model.value_bins)
         value_log_probs = F.log_softmax(value_logits, dim=-1)
         value_loss = (
             value_weights * -(value_target_dist * value_log_probs).sum(dim=-1)

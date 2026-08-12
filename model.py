@@ -16,17 +16,13 @@ VALUE_BINS = 41
 VALUE_MIN = -1000.0
 VALUE_MAX = 1000.0
 VALUE_SCALE = 400.0
+VALUE_BIN_WIDTH = (VALUE_MAX - VALUE_MIN) / (VALUE_BINS - 1)
 
 
-def two_hot(scores, bin_centers):
-    scores = scores.clamp(bin_centers[0], bin_centers[-1])
-    idx = (torch.bucketize(scores, bin_centers) - 1).clamp(0, len(bin_centers) - 2)
-    lo, hi = bin_centers[idx], bin_centers[idx + 1]
-    w_hi = ((scores - lo) / (hi - lo)).clamp(0, 1)
-    target = torch.zeros(*scores.shape, len(bin_centers), device=scores.device)
-    target.scatter_(-1, idx.unsqueeze(-1), (1 - w_hi).unsqueeze(-1))
-    target.scatter_add_(-1, (idx + 1).unsqueeze(-1), w_hi.unsqueeze(-1))
-    return target
+def two_hot(scores, bin_centers, bin_width=VALUE_BIN_WIDTH):
+    scores = scores.clamp(bin_centers[0], bin_centers[-1]).unsqueeze(-1)
+    weights = (1 - (scores - bin_centers).abs() / bin_width).clamp(min=0)
+    return weights / weights.sum(dim=-1, keepdim=True)
 
 
 def relative_position_ids():
