@@ -36,9 +36,13 @@ def main():
     print(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     replay.extend_pretrain(
-        load_pretrain_dataset(DEFAULT_PATH)
-        if os.path.exists(DEFAULT_PATH)
-        else generate_pretrain_dataset(config, DEFAULT_PATH)
+        (
+            load_pretrain_dataset(DEFAULT_PATH)
+            if os.path.exists(DEFAULT_PATH)
+            else generate_pretrain_dataset(config, DEFAULT_PATH)
+        ),
+        pool_size=config.pretrain_shuffle_pool,
+        chunk_size=config.pretrain_chunk_rows,
     )
     pretrain_steps = config.pretrain_steps_for(len(replay.pretrain_buf))
     print(

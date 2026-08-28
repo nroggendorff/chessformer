@@ -14,6 +14,7 @@ from tqdm import tqdm
 from config import amp_dtype, build_scheduler, set_optimizer_lr
 from encoding import INPUT_SIZE
 from evaluation import (
+    adjudicate_unresolved,
     binomial_z_score,
     clamp_uci_elo,
     estimate_elo,
@@ -58,6 +59,7 @@ def add_to_pool(pool, model, pool_size):
 def _collect_worker_results(futures):
     samples = []
     stats = {
+        "unresolved_positions": [],
         "games": 0,
         "decisive": 0,
         "drawn": 0,
@@ -130,6 +132,7 @@ def generate_self_play_data(
                 record_trajectory=record_trajectory,
                 include_policy_q_threshold=config.self_play_include_policy_q_threshold,
                 opening_moves_per_game=opening_moves_per_game,
+                target_beta=config.self_play_target_beta,
             )
 
     if stockfish_engine is not None:
@@ -180,6 +183,7 @@ def generate_self_play_data(
                     if opening_moves_per_game is not None
                     else None
                 ),
+                config.self_play_target_beta,
             )
             for i, (count, offset) in enumerate(zip(counts, offsets))
         ]
@@ -221,8 +225,8 @@ def head_to_head_score(
         model,
         games,
         max_moves,
-        0,
-        config.self_play_temperature_floor,
+        config.self_play_h2h_sample_moves,
+        config.self_play_h2h_opening_temperature,
         config.self_play_temperature_floor,
         device,
         config,
@@ -233,12 +237,36 @@ def head_to_head_score(
         opponent_state_dict=opponent_state,
         add_root_noise=False,
         record_trajectory=False,
-        mcts_simulations=config.inference_mcts_simulations,
-        opponent_mcts_simulations=config.inference_mcts_simulations,
+        mcts_simulations=config.h2h_mcts_simulations,
+        opponent_mcts_simulations=config.h2h_mcts_simulations,
         opening_moves_per_game=[
             opening_moves_for_game(i, plies=6) for i in range(games)
         ],
     )
+    if config.self_play_h2h_adjudicate and stats["unresolved_positions"]:
+        try:
+            scores = adjudicate_unresolved(
+                config.stockfish_path,
+                stats["unresolved_positions"],
+                config.elo_eval_adjudication_depth,
+                config.self_play_h2h_adjudication_margin,
+                max_workers=config.max_workers,
+            )
+        except (FileNotFoundError, chess.engine.EngineError) as error:
+            print(
+                f"head-to-head adjudication unavailable, discarding timeouts: {error}"
+            )
+            scores = []
+        for score in scores:
+            stats["unresolved"] -= 1
+            if score > 0.5:
+                stats["learner_wins"] += 1
+                stats["decisive"] += 1
+            elif score < 0.5:
+                stats["opponent_wins"] += 1
+                stats["decisive"] += 1
+            else:
+                stats["drawn"] += 1
     return stats
 
 
@@ -393,6 +421,9 @@ def run_self_play(
             )
             replay.extend_rl(samples)
 
+            if (it + 1) % config.self_play_pool_update_interval == 0:
+                add_to_pool(pool, model, config.self_play_pool_size)
+
             if (it + 1) % eval_interval == 0:
                 h2h = head_to_head_score(
                     model,
@@ -490,8 +521,18 @@ def run_self_play(
 
             if len(replay.rl_buf) > 0:
                 losses = []
+
+                n_pretrain = (
+                    int(config.self_play_batch_size * config.self_play_pretrain_mix)
+                    if len(replay.pretrain_buf) > 0
+                    else 0
+                )
                 for _ in range(config.self_play_gradient_steps):
-                    batch = replay.sample_rl(config.self_play_batch_size)
+                    batch = replay.sample_rl(config.self_play_batch_size - n_pretrain)
+                    if n_pretrain:
+                        batch = batch + replay.sample_pretrain(
+                            n_pretrain, require_policy=True
+                        )
                     if batch:
                         losses.append(
                             train_batch(
@@ -550,8 +591,16 @@ def run_self_play(
         )
         record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
         pbar.write(f"[final] candidate scored {record} vs best (z={z:.2f})")
-        model.load_state_dict(elo_state["best_state"])
-        pbar.write("[final] restored the last promoted champion")
+        if z > config.self_play_promote_z:
+            elo_state["best_state"] = {
+                k: v.cpu().clone() for k, v in model.state_dict().items()
+            }
+            pbar.write(
+                "[final] candidate beat the champion on the final match; keeping it"
+            )
+        else:
+            model.load_state_dict(elo_state["best_state"])
+            pbar.write("[final] restored the last promoted champion")
         final_elo, elo_state["elo_ema"] = estimate_elo(model, device, config, elo_state)
         pbar.write(f"[final] elo estimate: {final_elo:.0f}")
 
@@ -571,6 +620,7 @@ if __name__ == "__main__":
         set_optimizer_lr,
     )
     from model import save_checkpoint
+    from dataset import DEFAULT_PATH, load_pretrain_dataset
     from replay_buffer import DualRingBuffer
 
     config = Config()
@@ -608,6 +658,19 @@ if __name__ == "__main__":
     replay = DualRingBuffer(
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
+
+    if config.self_play_pretrain_mix > 0 and os.path.exists(DEFAULT_PATH):
+        replay.extend_pretrain(
+            load_pretrain_dataset(DEFAULT_PATH),
+            pool_size=config.pretrain_shuffle_pool,
+            chunk_size=config.pretrain_chunk_rows,
+        )
+        print(f"Anchoring RL batches with {len(replay.pretrain_buf):,} pretrain rows")
+    elif config.self_play_pretrain_mix > 0:
+        print(
+            f"No pretrain dataset at {DEFAULT_PATH}; RL batches will be "
+            "self-play samples only"
+        )
 
     run_self_play(
         model, train_model, opt, scaler, scheduler, replay, device, config, {}

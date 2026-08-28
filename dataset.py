@@ -17,7 +17,10 @@ DEFAULT_PATH = "pretrain_data"
 
 
 def dataset_to_samples(ds):
-    columns = ds.to_dict()
+    return columns_to_samples(ds.to_dict())
+
+
+def columns_to_samples(columns):
     return [
         (
             np.array(board_input, dtype=np.int64),

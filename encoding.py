@@ -79,10 +79,14 @@ def board_to_input(board):
     if board.move_stack:
         last_from[canon_square(board.peek().from_square, mover)] = 1
     legal_to = [0] * BOARD_SQUARES
-    for origin in chess.SQUARES:
-        if board.piece_at(origin):
-            legal_to[canon_square(origin, mover)] = _as_int64(
-                canon_bitboard(int(board.attacks(origin)), mover)
+    white = mover == chess.WHITE
+    for origin in chess.scan_reversed(board.occupied):
+        attacks = board.attacks_mask(origin)
+        if white:
+            legal_to[origin] = _as_int64(attacks)
+        else:
+            legal_to[chess.square_mirror(origin)] = _as_int64(
+                chess.flip_vertical(attacks)
             )
     return board_to_tokens(board) + legal_to + last_from
 

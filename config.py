@@ -103,6 +103,8 @@ class Config:
 
     pretrain_epochs: int = 6
     pretrain_batch_size: int = 128
+    pretrain_shuffle_pool: int = 262144
+    pretrain_chunk_rows: int = 16384
 
     self_play_iterations: int = 100
     self_play_games_per_iter: int = 32
@@ -111,19 +113,25 @@ class Config:
     self_play_max_moves: int = 110
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
-    self_play_gradient_steps: int = 16
+    self_play_gradient_steps: int = 64
     self_play_decisive_weight: float = 1.5
     self_play_timeout_value_weight: float = 0.1
     self_play_value_smoothing: float = 0.05
     self_play_entropy_coef: float = 0.0
-    self_play_include_policy_q_threshold: float = 1.1
+
+    self_play_include_policy_q_threshold: float = 0.85
+
+    self_play_target_beta: float = 2.0
+
+    self_play_pretrain_mix: float = 0.25
     self_play_lr: float = 8e-5
     self_play_promote_z: float = 1.5
     self_play_promote_confirm: int = 2
     self_play_rollback_z: float = 1.5
     self_play_rollback_patience: int = 3
     self_play_final_h2h_multiplier: int = 4
-    self_play_elo_drop_rollback: float = 75.0
+
+    self_play_elo_drop_rollback: float = 200.0
     self_play_resign_threshold: float | None = None
     self_play_resign_streak: int = 4
     self_play_pool_size: int = 8
@@ -132,7 +140,14 @@ class Config:
     self_play_stockfish_prob: float = 0.15
     self_play_pool_update_interval: int = 25
     self_play_h2h_games: int = 120
-    self_play_eval_count: int = 16
+
+    self_play_h2h_sample_moves: int = 6
+
+    self_play_h2h_adjudicate: bool = True
+    self_play_h2h_adjudication_margin: int = 150
+    self_play_h2h_opening_temperature: float = 1.0
+
+    self_play_eval_count: int = 6
     self_play_elo_refresh_interval: int = 20
     self_play_max_workers: int | None = 1
     self_play_worker_max_tasks: int = 256
@@ -155,6 +170,8 @@ class Config:
     self_play_mcts_simulations: int = 240
     self_play_opponent_mcts_simulations: int = 240
     inference_mcts_simulations: int = 400
+
+    h2h_mcts_simulations: int = 240
     mcts_sims_per_wave: int = 8
     mcts_target_batch_size: int = 8192
     mcts_max_batch_size: int = 1024
@@ -171,6 +188,7 @@ class Config:
     elo_eval_movetime: float = 0.2
     elo_eval_adjudication_depth: int = 12
     elo_eval_ema_alpha: float = 0.3
+    elo_eval_recenter_margin: float = 150.0
 
     pretrain_capacity: int = 55360000
     rl_capacity: int = 200000

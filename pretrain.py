@@ -82,9 +82,13 @@ if __name__ == "__main__":
         pretrain_capacity=config.pretrain_capacity, rl_capacity=config.rl_capacity
     )
     replay.extend_pretrain(
-        load_pretrain_dataset(DEFAULT_PATH)
-        if os.path.exists(DEFAULT_PATH)
-        else generate_pretrain_dataset(config, DEFAULT_PATH)
+        (
+            load_pretrain_dataset(DEFAULT_PATH)
+            if os.path.exists(DEFAULT_PATH)
+            else generate_pretrain_dataset(config, DEFAULT_PATH)
+        ),
+        pool_size=config.pretrain_shuffle_pool,
+        chunk_size=config.pretrain_chunk_rows,
     )
     total_steps = config.pretrain_steps_for(len(replay.pretrain_buf))
     print(

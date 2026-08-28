@@ -1,12 +1,17 @@
-import random
-
 import chess
 import chess.engine
 import numpy as np
 import torch
 
 from encoding import board_to_input, legal_moves_by_square_pair
-from tree_search import MCTSNode, choose_move, run_mcts, visit_policy_pairs
+from tree_search import (
+    MCTSNode,
+    choose_move,
+    game_over,
+    game_result,
+    improved_policy_pairs,
+    run_mcts,
+)
 
 
 @torch.inference_mode()
@@ -57,8 +62,9 @@ def play_games_batched(
     add_root_noise=True,
     value_smoothing=0.0,
     record_trajectory=True,
-    include_policy_q_threshold=1.1,
+    include_policy_q_threshold=0.85,
     opening_moves_per_game=None,
+    target_beta=0.0,
 ):
     model.eval()
     if opponent_model is not None:
@@ -71,8 +77,11 @@ def play_games_batched(
             for uci in moves:
                 board.push_uci(uci)
     roots = [MCTSNode(board.copy()) for board in boards]
+    # Alternate rather than randomise: a random split of 120 games carries a
+    # colour imbalance of +-11 games one sigma, and the white advantage then
+    # leaks straight into the head-to-head z-score that gates promotion.
     learner_color = [
-        chess.WHITE if random.random() < 0.5 else chess.BLACK for _ in range(num_games)
+        chess.WHITE if i % 2 == 0 else chess.BLACK for i in range(num_games)
     ]
     trajectories: list[list[dict]] = [[] for _ in range(num_games)]
     finished = [False] * num_games
@@ -116,7 +125,7 @@ def play_games_batched(
                 )
 
                 if record_trajectory:
-                    policy_pairs = visit_policy_pairs(root, board.turn)
+                    policy_pairs = improved_policy_pairs(root, board.turn, target_beta)
                     trajectories[i].append(
                         {
                             "board_input": board_to_input(board),
@@ -156,7 +165,7 @@ def play_games_batched(
                     if self_play_mode
                     else MCTSNode(board.copy())
                 )
-                if board.outcome(claim_draw=True) is not None:
+                if game_over(board):
                     finished[i] = True
 
         if opponent_idx and stockfish_engine is not None:
@@ -170,7 +179,7 @@ def play_games_batched(
                     continue
                 board.push(move)
                 roots[i] = MCTSNode(board.copy())
-                if board.outcome(claim_draw=True) is not None:
+                if game_over(board):
                     finished[i] = True
         elif opponent_idx:
             run_mcts(
@@ -188,20 +197,20 @@ def play_games_batched(
             )
             for i in opponent_idx:
                 board, root = boards[i], roots[i]
-                move = choose_move(root, temperature_floor)
+                move = choose_move(root, temperature_now)
                 if move is None:
                     finished[i] = True
                     continue
                 board.push(move)
                 roots[i] = MCTSNode(board.copy())
-                if board.outcome(claim_draw=True) is not None:
+                if game_over(board):
                     finished[i] = True
 
     resolved_flags, winners = [], [None] * num_games
     for i in range(num_games):
-        outcome = boards[i].outcome(claim_draw=True)
-        winners[i] = outcome.winner if outcome is not None else adjudicated_winner[i]
-        resolved_flags.append(outcome is not None or adjudicated_winner[i] is not None)
+        finished_game, winner = game_result(boards[i])
+        winners[i] = winner if finished_game else adjudicated_winner[i]
+        resolved_flags.append(finished_game or adjudicated_winner[i] is not None)
 
     timeout_idx = [
         i for i in range(num_games) if not resolved_flags[i] and trajectories[i]
@@ -222,10 +231,16 @@ def play_games_batched(
         if not trajectory:
             continue
         adjudicated = adjudicated_winner[i] is not None
-        base_policy_weight = (
-            decisive_weight if winner is not None and not adjudicated else 1.0
+        # A decisive game is evidence about both sides, but in opposite
+        # directions: it says the winner's moves are worth imitating and the
+        # loser's are not. Weighting the whole game up taught the model to
+        # copy the moves that lost it, so the bonus is applied per side below.
+        decisive_game = winner is not None and not adjudicated
+        value_weight = (
+            (decisive_weight if decisive_game else 1.0)
+            if resolved
+            else timeout_value_weight
         )
-        value_weight = base_policy_weight if resolved else timeout_value_weight
         bootstrap = timeout_values.get(i)
         for step in trajectory:
             if resolved:
@@ -240,7 +255,11 @@ def play_games_batched(
                 )
             else:
                 value_target = bootstrap if step["turn"] == board.turn else -bootstrap
-            policy_weight = base_policy_weight if step["include_policy"] else 0.0
+            policy_weight = 0.0
+            if step["include_policy"]:
+                policy_weight = (
+                    decisive_weight if decisive_game and step["turn"] == winner else 1.0
+                )
             samples.append(
                 (
                     np.array(step["board_input"], dtype=np.int64),
@@ -253,7 +272,16 @@ def play_games_batched(
                 )
             )
 
+    # Hand back the positions that ran out of moves so the caller can have them
+    # adjudicated rather than discarding them.
+    unresolved_positions = [
+        (boards[i].fen(), learner_color[i] == chess.WHITE)
+        for i in range(num_games)
+        if not resolved_flags[i]
+    ]
+
     stats = {
+        "unresolved_positions": unresolved_positions,
         "games": num_games,
         "decisive": decisive,
         "drawn": drawn,

@@ -8,7 +8,7 @@ import chess
 import chess.engine
 
 from data_generation import pin_to_next_cpu
-from tree_search import mcts_policy_step
+from tree_search import game_over, game_result, mcts_policy_step
 
 ELO_EVAL_ANCHOR_SPREAD = (-200, 0, 200)
 EVAL_OPENING_LINES = (
@@ -38,12 +38,19 @@ def expected_score(rating, opponent_rating):
 
 
 def binomial_z_score(wins, draws, games, baseline=0.5):
-    if games == 0:
+    if games <= 1:
         return 0.0
+    losses = max(0, games - wins - draws)
     smoothed_n = games + 2
-    smoothed_score = (wins + 0.5 * draws + 1) / smoothed_n
-    se = math.sqrt(baseline * (1 - baseline) / smoothed_n)
-    return (smoothed_score - baseline) / se
+    score = (wins + 0.5 * draws + 1) / smoothed_n
+    variance = (
+        wins * (1.0 - score) ** 2
+        + draws * (0.5 - score) ** 2
+        + losses * score**2
+        + 2 * (0.5 - score) ** 2
+    ) / smoothed_n
+    se = math.sqrt(max(variance, 0.25 / smoothed_n) / smoothed_n)
+    return (score - baseline) / se
 
 
 def fit_rating(calibrated_results, lo=-3000.0, hi=4000.0, iters=80):
@@ -101,7 +108,7 @@ def play_eval_game(
     mover = chess.WHITE if model_is_white else chess.BLACK
     plies = len(opening_moves)
     for _ in range(max(0, max_moves - plies)):
-        if board.is_game_over(claim_draw=True):
+        if game_over(board):
             break
         if board.turn == mover:
             moves, _ = mcts_policy_step(
@@ -120,8 +127,8 @@ def play_eval_game(
             board.push(engine.play(board, limit).move)
         plies += 1
 
-    outcome = board.outcome(claim_draw=True)
-    timed_out = outcome is None
+    finished, winner = game_result(board)
+    timed_out = not finished
     if timed_out:
         cp = (
             engine.analyse(board, chess.engine.Limit(depth=adjudication_depth))["score"]
@@ -130,7 +137,7 @@ def play_eval_game(
         )
         score = 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
     else:
-        score = 0.5 if outcome.winner is None else float(outcome.winner == mover)
+        score = 0.5 if winner is None else float(winner == mover)
     return {"score": score, "plies": plies, "timed_out": timed_out}
 
 
@@ -163,6 +170,52 @@ def eval_worker_timeout_score(fen, mover_is_white, depth=10):
         .score(mate_score=10000)
     )
     return 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
+
+
+_ADJUDICATION_ENGINE = None
+
+
+def _adjudication_shutdown():
+    if _ADJUDICATION_ENGINE is not None:
+        try:
+            _ADJUDICATION_ENGINE.quit()
+        except Exception:
+            pass
+
+
+def adjudication_worker_init(engine_path):
+    global _ADJUDICATION_ENGINE
+    _ADJUDICATION_ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
+    atexit.register(_adjudication_shutdown)
+
+
+def adjudicate_position(fen, mover_is_white, depth, margin):
+    score = (
+        _ADJUDICATION_ENGINE.analyse(chess.Board(fen), chess.engine.Limit(depth=depth))[
+            "score"
+        ]
+        .pov(chess.WHITE if mover_is_white else chess.BLACK)
+        .score(mate_score=10000)
+    )
+    return 1.0 if score > margin else 0.0 if score < -margin else 0.5
+
+
+def adjudicate_unresolved(engine_path, positions, depth, margin, max_workers=1):
+    if not positions:
+        return []
+    workers = max(1, min(max_workers, len(positions)))
+    ctx = mp.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=ctx,
+        initializer=adjudication_worker_init,
+        initargs=(engine_path,),
+    ) as pool:
+        futures = [
+            pool.submit(adjudicate_position, fen, white, depth, margin)
+            for fen, white in positions
+        ]
+        return [f.result() for f in futures]
 
 
 def play_all_anchor_games(
@@ -240,7 +293,7 @@ def play_all_anchor_games(
                     for i, move in zip(subset, moves):
                         boards[i].push(move)
                         plies[i] += 1
-                        if boards[i].is_game_over(claim_draw=True):
+                        if game_over(boards[i]):
                             finished[i] = True
 
             if engine_idx:
@@ -253,10 +306,10 @@ def play_all_anchor_games(
                 for i, future in futures.items():
                     boards[i].push_uci(future.result())
                     plies[i] += 1
-                    if boards[i].is_game_over(claim_draw=True):
+                    if game_over(boards[i]):
                         finished[i] = True
 
-        outcomes = [board.outcome(claim_draw=True) for board in boards]
+        outcomes = [game_result(board) for board in boards]
         timeout_futures = {
             i: pools[anchor_of_game[i]].submit(
                 eval_worker_timeout_score,
@@ -264,20 +317,20 @@ def play_all_anchor_games(
                 model_is_white[i],
                 adjudication_depth,
             )
-            for i, outcome in enumerate(outcomes)
-            if outcome is None
+            for i, (finished, _) in enumerate(outcomes)
+            if not finished
         }
 
         results = [
             {"score": 0.0, "games": games_per_anchor, "level": {"elo": elo}}
             for elo in elos
         ]
-        for i, outcome in enumerate(outcomes):
+        for i, (finished, winner) in enumerate(outcomes):
             mover = chess.WHITE if model_is_white[i] else chess.BLACK
             score = (
-                timeout_futures[i].result()
-                if outcome is None
-                else (0.5 if outcome.winner is None else float(outcome.winner == mover))
+                (0.5 if winner is None else float(winner == mover))
+                if finished
+                else timeout_futures[i].result()
             )
             results[anchor_of_game[i]]["score"] += score
 
@@ -287,6 +340,10 @@ def play_all_anchor_games(
 def adaptive_eval_anchors(config, state):
     center = state.get("last_elo", state.get("elo_ema", config.elo_eval_anchor))
     center = int(round(center / 50.0) * 50)
+    pinned = state.get("anchor_center")
+    if pinned is not None and abs(center - pinned) < config.elo_eval_recenter_margin:
+        center = pinned
+    state["anchor_center"] = center
     return [center + spread for spread in ELO_EVAL_ANCHOR_SPREAD]
 
 
