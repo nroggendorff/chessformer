@@ -1,4 +1,5 @@
 import math
+import time
 import weakref
 
 import numpy as np
@@ -234,6 +235,7 @@ def run_mcts(
     root_noise_frac=0.25,
     target_batch_size=None,
     max_batch_size=None,
+    deadline=None,
 ):
     live_roots = [
         root
@@ -265,10 +267,13 @@ def run_mcts(
         )
     )
 
+    wave_cap = effective_wave if deadline is None else sims_per_wave
+    sim_cost = None
     remaining = num_simulations
     while remaining > 0 and live_roots:
-        wave = min(effective_wave, remaining)
+        wave = min(wave_cap, remaining)
         remaining -= wave
+        wave_started = time.monotonic() if deadline is not None else 0.0
 
         paths = []
         for root in live_roots:
@@ -324,6 +329,17 @@ def run_mcts(
                 )
                 value = 0.0
             _backup(path, value)
+
+        if deadline is not None:
+            now = time.monotonic()
+            cost = max(now - wave_started, 1e-9) / wave
+            sim_cost = cost if sim_cost is None else max(cost, 0.5 * sim_cost + cost)
+            left = deadline - now
+            if left <= sim_cost * sims_per_wave:
+                break
+            wave_cap = int(
+                max(sims_per_wave, min(effective_wave, 0.35 * left / sim_cost))
+            )
 
     return roots
 
@@ -398,6 +414,7 @@ def mcts_policy_step(
     root_noise_frac=0.25,
     target_batch_size=None,
     max_batch_size=None,
+    deadline=None,
 ):
     roots = run_mcts(
         [MCTSNode(board.copy()) for board in boards],
@@ -411,6 +428,7 @@ def mcts_policy_step(
         root_noise_frac=root_noise_frac,
         target_batch_size=target_batch_size,
         max_batch_size=max_batch_size,
+        deadline=deadline,
     )
     moves = [choose_move(root, temperature) for root in roots]
     live_idx = [i for i, m in enumerate(moves) if m is not None]
@@ -426,18 +444,46 @@ def mcts_policy_step(
     return moves, roots
 
 
-def mcts_move(board, model, device, config, temperature=0.0, add_root_noise=False):
-    moves, _ = mcts_policy_step(
+def mcts_move_with_visits(
+    board,
+    model,
+    device,
+    config,
+    temperature=0.0,
+    add_root_noise=False,
+    num_simulations=None,
+    deadline=None,
+):
+    moves, roots = mcts_policy_step(
         [board],
         model,
         device,
-        num_simulations=config.inference_mcts_simulations,
+        num_simulations=(
+            config.inference_mcts_simulations
+            if num_simulations is None
+            else num_simulations
+        ),
         sims_per_wave=config.mcts_sims_per_wave,
         c_puct=config.mcts_c_puct,
         temperature=temperature,
         add_root_noise=add_root_noise,
         target_batch_size=config.mcts_target_batch_size,
         max_batch_size=config.mcts_max_batch_size,
+        deadline=deadline,
     )
     move = moves[0]
-    return move if move is not None else next(iter(board.legal_moves))
+    if move is None:
+        move = next(iter(board.legal_moves))
+    return move, (roots[0].visit_count if roots else 0)
+
+
+def mcts_move(board, model, device, config, temperature=0.0, add_root_noise=False):
+    move, _ = mcts_move_with_visits(
+        board,
+        model,
+        device,
+        config,
+        temperature=temperature,
+        add_root_noise=add_root_noise,
+    )
+    return move
