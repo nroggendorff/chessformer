@@ -55,7 +55,9 @@ def board_to_tokens(board):
         if board.ep_square is None
         else EP_FILE_BASE + chess.square_file(board.ep_square)
     )
-    repetition = 2 if board.is_repetition(3) else 1 if board.is_repetition(2) else 0
+    repetition = 0
+    if board.is_repetition(2):
+        repetition = 2 if board.is_repetition(3) else 1
 
     tokens.extend(
         [
@@ -69,8 +71,9 @@ def board_to_tokens(board):
     return tokens
 
 
-def _as_int64(bitboard):
-    return bitboard - (1 << 64) if bitboard >= (1 << 63) else bitboard
+SIGN_BIT = 1 << 63
+WRAP = 1 << 64
+MIRROR = 0x38
 
 
 def board_to_input(board):
@@ -79,28 +82,28 @@ def board_to_input(board):
     if board.move_stack:
         last_from[canon_square(board.peek().from_square, mover)] = 1
     legal_to = [0] * BOARD_SQUARES
-    white = mover == chess.WHITE
-    for origin in chess.scan_reversed(board.occupied):
-        attacks = board.attacks_mask(origin)
-        if white:
-            legal_to[origin] = _as_int64(attacks)
-        else:
-            legal_to[chess.square_mirror(origin)] = _as_int64(
-                chess.flip_vertical(attacks)
+    attacks_mask = board.attacks_mask
+    if mover == chess.WHITE:
+        for origin in chess.scan_reversed(board.occupied):
+            attacks = attacks_mask(origin)
+            legal_to[origin] = attacks - WRAP if attacks >= SIGN_BIT else attacks
+    else:
+        flip_vertical = chess.flip_vertical
+        for origin in chess.scan_reversed(board.occupied):
+            attacks = flip_vertical(attacks_mask(origin))
+            legal_to[origin ^ MIRROR] = (
+                attacks - WRAP if attacks >= SIGN_BIT else attacks
             )
     return board_to_tokens(board) + legal_to + last_from
 
 
 def legal_moves_by_square_pair(board, legal_moves=None, include_promotions=True):
-    mover = board.turn
     moves = {}
+    flip = 0 if board.turn == chess.WHITE else MIRROR
     for move in board.legal_moves if legal_moves is None else legal_moves:
         if not include_promotions and move.promotion is not None:
             continue
-        key = (
-            canon_square(move.from_square, mover),
-            canon_square(move.to_square, mover),
-        )
+        key = (move.from_square ^ flip, move.to_square ^ flip)
         if move.promotion in (None, chess.QUEEN):
             moves[key] = move
         else:

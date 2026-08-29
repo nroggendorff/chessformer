@@ -1,6 +1,7 @@
 import concurrent.futures
 import contextlib
 import gc
+import math
 import multiprocessing as mp
 import os
 import random
@@ -90,6 +91,7 @@ def generate_self_play_data(
     opponent_model=None,
     opponent_state_dict=None,
     stockfish_engine=None,
+    stockfish_path=None,
     stockfish_movetime=0.1,
     add_root_noise=True,
     value_smoothing=0.0,
@@ -120,6 +122,7 @@ def generate_self_play_data(
                 target_batch_size=config.mcts_target_batch_size,
                 max_batch_size=config.mcts_max_batch_size,
                 c_puct=config.mcts_c_puct,
+                fpu_reduction=config.mcts_fpu_reduction,
                 dirichlet_alpha=config.mcts_dirichlet_alpha,
                 root_noise_frac=config.mcts_root_noise_frac,
                 opponent_model=opponent_model,
@@ -135,14 +138,11 @@ def generate_self_play_data(
                 target_beta=config.self_play_target_beta,
             )
 
-    if stockfish_engine is not None:
-        raise NotImplementedError(
-            "stockfish_engine is only supported without multiprocessing"
-        )
-
     max_workers = min(max_workers or mp.cpu_count(), total_games)
     state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
-    chunk = min(config.self_play_chunk_games, total_games)
+    chunk = max(
+        1, min(config.self_play_chunk_games, math.ceil(total_games / max_workers))
+    )
     counts = [chunk] * (total_games // chunk) + (
         [total_games % chunk] if total_games % chunk else []
     )
@@ -170,8 +170,11 @@ def generate_self_play_data(
                 config.mcts_c_puct,
                 config.mcts_dirichlet_alpha,
                 config.mcts_root_noise_frac,
-                "cpu",
+                device.type,
                 opponent_state_dict,
+                stockfish_path,
+                config.self_play_stockfish_elo,
+                stockfish_movetime,
                 config.self_play_resign_threshold,
                 config.self_play_resign_streak,
                 add_root_noise,
@@ -184,6 +187,7 @@ def generate_self_play_data(
                     else None
                 ),
                 config.self_play_target_beta,
+                config.mcts_fpu_reduction,
             )
             for i, (count, offset) in enumerate(zip(counts, offsets))
         ]
@@ -196,7 +200,7 @@ def generate_self_play_data(
         mp_context=mp.get_context("spawn"),
         initializer=worker_init,
         initargs=(
-            "cpu",
+            device.type,
             config.d_model,
             config.nhead,
             config.enc_layers,
@@ -274,10 +278,11 @@ def run_self_play(
     model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
 ):
     warmup_train_model(model, train_model, opt, scaler, config, device)
+    gc.set_threshold(100000, 50, 50)
     use_multiprocessing = (config.self_play_max_workers or 1) > 1
     max_workers = (
         min(
-            calibrate_self_play_workers(config) if use_multiprocessing else 1,
+            calibrate_self_play_workers(config, device) if use_multiprocessing else 1,
             config.self_play_games_per_iter,
         )
         if use_multiprocessing
@@ -287,7 +292,7 @@ def run_self_play(
     print(
         f"Training on {device.type}; generating self-play games with "
         + (
-            f"{max_workers} CPU worker processes"
+            f"{max_workers} {device.type} worker processes"
             if use_multiprocessing
             else "a single batched pass"
         )
@@ -299,7 +304,7 @@ def run_self_play(
             mp_context=mp.get_context("spawn"),
             initializer=worker_init,
             initargs=(
-                "cpu",
+                device.type,
                 config.d_model,
                 config.nhead,
                 config.enc_layers,
@@ -336,7 +341,8 @@ def run_self_play(
 
         pool = [elo_state["best_state"]]
         stockfish_engine = None
-        if config.self_play_stockfish_prob > 0 and not use_multiprocessing:
+        stockfish_available = config.self_play_stockfish_prob > 0
+        if stockfish_available and not use_multiprocessing:
             try:
                 stockfish_engine = stack.enter_context(
                     chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
@@ -351,8 +357,7 @@ def run_self_play(
                 )
             except (FileNotFoundError, chess.engine.EngineError) as error:
                 print(f"Stockfish self-play opponents disabled: {error}")
-        elif config.self_play_stockfish_prob > 0:
-            print("Stockfish self-play opponents require self_play_max_workers=1")
+                stockfish_available = False
 
         pbar = tqdm(
             range(config.self_play_iterations),
@@ -386,8 +391,7 @@ def run_self_play(
             anchor_threshold = self_threshold + config.self_play_anchor_prob
             stockfish_threshold = anchor_threshold + config.self_play_stockfish_prob
             use_stockfish = (
-                stockfish_engine is not None
-                and anchor_threshold <= roll < stockfish_threshold
+                stockfish_available and anchor_threshold <= roll < stockfish_threshold
             )
             opponent_state = (
                 None
@@ -416,6 +420,11 @@ def run_self_play(
                 opponent_model=None if opponent_state is None else opponent_model,
                 opponent_state_dict=opponent_state,
                 stockfish_engine=stockfish_engine if use_stockfish else None,
+                stockfish_path=(
+                    config.stockfish_path
+                    if use_stockfish and use_multiprocessing
+                    else None
+                ),
                 stockfish_movetime=config.self_play_stockfish_movetime,
                 value_smoothing=config.self_play_value_smoothing,
             )
@@ -591,7 +600,7 @@ def run_self_play(
         )
         record = f"{h2h['learner_wins']}-{h2h['opponent_wins']}-{h2h['drawn']}"
         pbar.write(f"[final] candidate scored {record} vs best (z={z:.2f})")
-        if z > config.self_play_promote_z:
+        if z > config.self_play_final_promote_z:
             elo_state["best_state"] = {
                 k: v.cpu().clone() for k, v in model.state_dict().items()
             }

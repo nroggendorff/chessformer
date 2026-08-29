@@ -2,6 +2,7 @@ import os
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from safetensors.torch import load_file, save_file
 
 from encoding import BOARD_SQUARES, SEQ_LEN, VOCAB_SIZE
@@ -35,6 +36,35 @@ def relative_position_ids():
     return ids
 
 
+class RelativeEncoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward):
+        super().__init__()
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
+        self.self_attn = nn.MultiheadAttention(
+            d_model, nhead, dropout=0.0, batch_first=True
+        )
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, x, bias):
+        B, N, _ = x.shape
+        h = self.norm1(x)
+        qkv = F.linear(h, self.self_attn.in_proj_weight, self.self_attn.in_proj_bias)
+        q, k, v = (
+            qkv.view(B, N, 3, self.nhead, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+            .unbind(0)
+        )
+        attended = F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
+        attended = attended.transpose(1, 2).reshape(B, N, -1)
+        x = x + self.self_attn.out_proj(attended)
+        h = self.norm2(x)
+        return x + self.linear2(F.gelu(self.linear1(h)))
+
+
 class RelativeTransformerEncoder(nn.Module):
     rel_ids: torch.Tensor
 
@@ -42,15 +72,7 @@ class RelativeTransformerEncoder(nn.Module):
         super().__init__()
         self.nhead = nhead
         self.layers = nn.ModuleList(
-            nn.TransformerEncoderLayer(
-                d_model,
-                nhead,
-                dim_feedforward,
-                dropout=0.0,
-                activation="gelu",
-                batch_first=True,
-                norm_first=True,
-            )
+            RelativeEncoderLayer(d_model, nhead, dim_feedforward)
             for _ in range(num_layers)
         )
         self.rel_bias = nn.ParameterList(
@@ -59,17 +81,13 @@ class RelativeTransformerEncoder(nn.Module):
         self.register_buffer("rel_ids", relative_position_ids(), persistent=False)
 
     def forward(self, x):
-        B, N, _ = x.shape
         for layer, bias_table in zip(self.layers, self.rel_bias):
-            bias = (REL_BIAS_SCALE * torch.tanh(bias_table[self.rel_ids])).permute(
-                2, 0, 1
+            bias = (
+                (REL_BIAS_SCALE * torch.tanh(bias_table[self.rel_ids]))
+                .permute(2, 0, 1)
+                .unsqueeze(0)
             )
-            mask = (
-                bias.unsqueeze(0)
-                .expand(B, self.nhead, N, N)
-                .reshape(B * self.nhead, N, N)
-            )
-            x = layer(x, src_mask=mask)
+            x = layer(x, bias)
         return x
 
 

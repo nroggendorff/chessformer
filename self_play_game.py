@@ -52,6 +52,7 @@ def play_games_batched(
     target_batch_size=None,
     max_batch_size=None,
     c_puct=1.5,
+    fpu_reduction=0.25,
     dirichlet_alpha=0.3,
     root_noise_frac=0.25,
     opponent_model=None,
@@ -77,9 +78,6 @@ def play_games_batched(
             for uci in moves:
                 board.push_uci(uci)
     roots = [MCTSNode(board.copy()) for board in boards]
-    # Alternate rather than randomise: a random split of 120 games carries a
-    # colour imbalance of +-11 games one sigma, and the white advantage then
-    # leaks straight into the head-to-head z-score that gates promotion.
     learner_color = [
         chess.WHITE if i % 2 == 0 else chess.BLACK for i in range(num_games)
     ]
@@ -109,6 +107,7 @@ def play_games_batched(
                 target_batch_size=target_batch_size,
                 max_batch_size=max_batch_size,
                 c_puct=c_puct,
+                fpu_reduction=fpu_reduction,
                 add_root_noise=add_root_noise,
                 root_dirichlet_alpha=dirichlet_alpha,
                 root_noise_frac=root_noise_frac,
@@ -191,6 +190,7 @@ def play_games_batched(
                 target_batch_size=target_batch_size,
                 max_batch_size=max_batch_size,
                 c_puct=c_puct,
+                fpu_reduction=fpu_reduction,
                 add_root_noise=False,
                 root_dirichlet_alpha=dirichlet_alpha,
                 root_noise_frac=root_noise_frac,
@@ -231,10 +231,6 @@ def play_games_batched(
         if not trajectory:
             continue
         adjudicated = adjudicated_winner[i] is not None
-        # A decisive game is evidence about both sides, but in opposite
-        # directions: it says the winner's moves are worth imitating and the
-        # loser's are not. Weighting the whole game up taught the model to
-        # copy the moves that lost it, so the bonus is applied per side below.
         decisive_game = winner is not None and not adjudicated
         value_weight = (
             (decisive_weight if decisive_game else 1.0)
@@ -272,8 +268,6 @@ def play_games_batched(
                 )
             )
 
-    # Hand back the positions that ran out of moves so the caller can have them
-    # adjudicated rather than discarding them.
     unresolved_positions = [
         (boards[i].fen(), learner_color[i] == chess.WHITE)
         for i in range(num_games)

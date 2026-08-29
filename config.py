@@ -96,8 +96,7 @@ class Config:
     pretrain_policy_temperature: float = 0.06
     pretrain_drive_temperature: float = 0.3
     pretrain_sample_ply_ramp: int = 10
-    pretrain_max_sample_win_prob: float = 0.97
-    pretrain_max_sample_entropy: float = 1.5
+    pretrain_max_sample_entropy_ratio: float = 0.97
     pretrain_sample_stability: int = 2
     pretrain_sample_score_margin: int = 25
 
@@ -126,6 +125,7 @@ class Config:
     self_play_pretrain_mix: float = 0.25
     self_play_lr: float = 8e-5
     self_play_promote_z: float = 1.5
+    self_play_final_promote_z: float = 0.0
     self_play_promote_confirm: int = 2
     self_play_rollback_z: float = 1.5
     self_play_rollback_patience: int = 3
@@ -147,12 +147,13 @@ class Config:
     self_play_h2h_adjudication_margin: int = 150
     self_play_h2h_opening_temperature: float = 1.0
 
-    self_play_eval_count: int = 6
+    self_play_eval_count: int = 12
     self_play_elo_refresh_interval: int = 20
-    self_play_max_workers: int | None = 1
+    self_play_max_workers: int | None = 8
     self_play_worker_max_tasks: int = 256
     self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
+    self_play_worker_vram_mb: float = 900.0
     self_play_stockfish_elo: int = 1800
     self_play_stockfish_movetime: float = 0.2
 
@@ -176,6 +177,7 @@ class Config:
     mcts_target_batch_size: int = 8192
     mcts_max_batch_size: int = 1024
     mcts_c_puct: float = 1.5
+    mcts_fpu_reduction: float = 0.25
     mcts_dirichlet_alpha: float = 0.3
     mcts_root_noise_frac: float = 0.15
 

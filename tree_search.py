@@ -11,7 +11,7 @@ from encoding import (
     canon_square,
     legal_moves_by_square_pair,
 )
-from model import piece_gather
+from model import MAX_PIECES
 from policy import resolve_promotions
 
 _warned_fens = set()
@@ -21,6 +21,14 @@ def _warn_once(message, fen):
     if fen not in _warned_fens:
         _warned_fens.add(fen)
         print(message)
+
+
+def push_copy(board, move):
+    child = board.copy(stack=False)
+    child.move_stack = board.move_stack.copy()
+    child._stack = board._stack.copy()
+    child.push(move)
+    return child
 
 
 class MCTSNode:
@@ -38,12 +46,13 @@ class MCTSNode:
         "expanded",
         "terminal",
         "terminal_value",
+        "solved",
         "legal_moves",
     )
 
     def __init__(self, board, parent=None, move=None, prior=0.0):
         self.board = board
-        self.parent = None if parent is None else weakref.proxy(parent)
+        self.parent = parent
         self.move = move
         self.prior = prior
 
@@ -55,28 +64,32 @@ class MCTSNode:
         self.expanded = False
         self.terminal = False
         self.terminal_value = 0.0
+        self.solved = 0
         self.legal_moves = None
 
     def ensure_board(self):
         if self.board is None:
-            self.board = self.parent.board.copy()
-            self.board.push(self.move)
+            self.board = push_copy(self.parent.board, self.move)
         return self.board
 
-    def puct_score(self, c_puct, parent_visits):
+    def puct_score(self, c_puct, parent_visits, fpu):
         n = self.visit_count + self.virtual_loss
-        q = 0.0 if n == 0 else (self.value_sum - self.virtual_loss) / n
+        q = fpu if n == 0 else (self.value_sum - self.virtual_loss) / n
         score = q + c_puct * self.prior * math.sqrt(parent_visits) / (1 + n)
         return score if math.isfinite(score) else float("-inf")
 
-    def select_child(self, c_puct):
-
+    def select_child(self, c_puct, fpu_reduction):
+        fpu = (
+            -self.value_sum / self.visit_count if self.visit_count else 0.0
+        ) - fpu_reduction
         exploration = c_puct * math.sqrt(max(1, self.visit_count + self.virtual_loss))
         best_score, best = float("-inf"), None
         for item in self.children.items():
             child = item[1]
+            if child.solved == 1:
+                continue
             n = child.visit_count + child.virtual_loss
-            q = 0.0 if n == 0 else (child.value_sum - child.virtual_loss) / n
+            q = fpu if n == 0 else (child.value_sum - child.virtual_loss) / n
             score = q + exploration * child.prior / (1 + n)
             if score > best_score:
                 best_score, best = score, item
@@ -118,7 +131,7 @@ def _softmax(logits):
     return exp / exp.sum()
 
 
-def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
+def _expansion_plan(node, piece_squares_row, piece_mask_row):
     move_map = legal_moves_by_square_pair(node.board, legal_moves=node.legal_moves)
     slot_of_square = {
         int(sq): slot
@@ -133,12 +146,23 @@ def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
             moves.append(move)
             slots.append(slot)
             dests.append(to)
+    return moves, slots, dests
 
+
+def _attach_children(node, moves, priors):
+    parent = weakref.proxy(node)
+    children = node.children
+    for move, prior in zip(moves, priors):
+        children[move] = MCTSNode(None, parent=parent, move=move, prior=prior)
+    node.expanded = True
+
+
+def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
+    moves, slots, dests = _expansion_plan(node, piece_squares_row, piece_mask_row)
     if not moves:
         return
 
     logits = heatmap_row[slots, dests]
-
     if not np.isfinite(logits).all():
         _warn_once(
             f"non-finite heatmap logits at fen={node.board.fen()!r}; using uniform prior",
@@ -146,11 +170,49 @@ def expand_node(node, heatmap_row, piece_squares_row, piece_mask_row):
         )
         priors = [1.0 / len(moves)] * len(moves)
     else:
-        priors = _softmax(logits)
+        priors = _softmax(logits).tolist()
+    _attach_children(node, moves, priors)
 
-    for move, prior in zip(moves, priors):
-        node.children[move] = MCTSNode(None, parent=node, move=move, prior=float(prior))
-    node.expanded = True
+
+def expand_nodes(nodes, heatmaps, piece_squares, piece_masks):
+    plans, rows, slots, dests, lengths = [], [], [], [], []
+    for i, node in enumerate(nodes):
+        moves, node_slots, node_dests = _expansion_plan(
+            node, piece_squares[i], piece_masks[i]
+        )
+        plans.append((node, moves))
+        if not moves:
+            continue
+        rows.extend([i] * len(moves))
+        slots.extend(node_slots)
+        dests.extend(node_dests)
+        lengths.append(len(moves))
+
+    if not rows:
+        return
+
+    logits = heatmaps[rows, slots, dests].astype(np.float64)
+    if not np.isfinite(logits).all():
+        for (node, moves), heatmap_row, ps_row, pm_row in zip(
+            plans, heatmaps, piece_squares, piece_masks
+        ):
+            if moves:
+                expand_node(node, heatmap_row, ps_row, pm_row)
+        return
+
+    starts = np.zeros(len(lengths), dtype=np.intp)
+    np.cumsum(lengths[:-1], out=starts[1:])
+    counts = np.asarray(lengths, dtype=np.intp)
+    exp = np.exp(logits - np.repeat(np.maximum.reduceat(logits, starts), counts))
+    priors = exp / np.repeat(np.add.reduceat(exp, starts), counts)
+
+    offset = 0
+    for node, moves in plans:
+        if not moves:
+            continue
+        end = offset + len(moves)
+        _attach_children(node, moves, priors[offset:end].tolist())
+        offset = end
 
 
 def add_root_dirichlet_noise(root, alpha, frac):
@@ -162,13 +224,26 @@ def add_root_dirichlet_noise(root, alpha, frac):
         child.prior = child.prior * (1 - frac) + float(n) * frac
 
 
-def _select_leaf(root, c_puct):
+def _select_leaf(root, c_puct, fpu_reduction):
     path = [root]
     node = root
-    while node.expanded and not node.terminal and node.children:
-        _, node = node.select_child(c_puct)
+    while node.expanded and not node.terminal and not node.solved and node.children:
+        _, node = node.select_child(c_puct, fpu_reduction)
         path.append(node)
     return path
+
+
+def _update_solved(path):
+    for node in reversed(path):
+        if node.solved or node.terminal or not node.children:
+            continue
+        children = node.children.values()
+        if any(child.solved == -1 for child in children):
+            node.solved = 1
+        elif all(child.solved == 1 for child in children):
+            node.solved = -1
+        else:
+            break
 
 
 def _backup(path, value):
@@ -178,24 +253,27 @@ def _backup(path, value):
         node.visit_count += 1
         node.value_sum += sign * value
         sign = -sign
+    _update_solved(path)
+
+
+def numpy_piece_gather(board_tokens):
+    own_piece = (board_tokens >= 1) & (board_tokens <= 6)
+    piece_squares = np.argsort(~own_piece, axis=1, kind="stable")[:, :MAX_PIECES]
+    return piece_squares, np.take_along_axis(own_piece, piece_squares, axis=1)
 
 
 @torch.inference_mode()
 def _evaluate_boards(boards, model, device, legal_moves=None):
     if legal_moves is None:
         legal_moves = [list(b.legal_moves) for b in boards]
-    board_inputs = torch.tensor(
-        [board_to_input(b) for b in boards],
-        dtype=torch.long,
-        device=device,
-    )
-    heatmap, value, _ = model(board_inputs)
-    piece_squares, piece_mask = piece_gather(board_inputs[:, :BOARD_SQUARES])
+    inputs = np.asarray([board_to_input(b) for b in boards], dtype=np.int64)
+    heatmap, value, _ = model(torch.from_numpy(inputs).to(device))
+    piece_squares, piece_mask = numpy_piece_gather(inputs[:, :BOARD_SQUARES])
     return (
         heatmap.float().cpu().numpy(),
         value.float().cpu().tolist(),
-        piece_squares.cpu().numpy(),
-        piece_mask.cpu().numpy(),
+        piece_squares,
+        piece_mask,
         legal_moves,
     )
 
@@ -230,6 +308,7 @@ def run_mcts(
     num_simulations=200,
     sims_per_wave=8,
     c_puct=1.5,
+    fpu_reduction=0.25,
     add_root_noise=False,
     root_dirichlet_alpha=0.3,
     root_noise_frac=0.25,
@@ -248,11 +327,9 @@ def run_mcts(
         heatmaps, _, piece_squares, piece_masks, legal_moves = _evaluate_boards_capped(
             [root.board for root in fresh_roots], model, device, max_batch_size
         )
-        for root, hm_row, ps_row, pm_row, lm in zip(
-            fresh_roots, heatmaps, piece_squares, piece_masks, legal_moves
-        ):
+        for root, lm in zip(fresh_roots, legal_moves):
             root.legal_moves = lm
-            expand_node(root, hm_row, ps_row, pm_row)
+        expand_nodes(fresh_roots, heatmaps, piece_squares, piece_masks)
 
     if add_root_noise:
         for root in live_roots:
@@ -275,12 +352,13 @@ def run_mcts(
         remaining -= wave
         wave_started = time.monotonic() if deadline is not None else 0.0
 
+        live_roots = [root for root in live_roots if not root.solved]
         paths = []
         for root in live_roots:
             if not root.children:
                 continue
             for _ in range(wave):
-                path = _select_leaf(root, c_puct)
+                path = _select_leaf(root, c_puct, fpu_reduction)
                 for node in path:
                     node.virtual_loss += 1
                 paths.append((root, path))
@@ -297,6 +375,8 @@ def run_mcts(
             if tv is not None:
                 leaf.terminal = True
                 leaf.terminal_value = tv
+                if tv < 0:
+                    leaf.solved = -1
             else:
                 pending.append(leaf)
 
@@ -308,12 +388,8 @@ def run_mcts(
                 max_batch_size,
                 [leaf.legal_moves for leaf in pending],
             )
-            leaf_values = {}
-            for leaf, hm_row, ps_row, pm_row, v in zip(
-                pending, heatmaps, piece_squares, piece_masks, values
-            ):
-                expand_node(leaf, hm_row, ps_row, pm_row)
-                leaf_values[id(leaf)] = v
+            expand_nodes(pending, heatmaps, piece_squares, piece_masks)
+            leaf_values = {id(leaf): v for leaf, v in zip(pending, values)}
         else:
             leaf_values = {}
 
@@ -321,7 +397,7 @@ def run_mcts(
             leaf = path[-1]
             value = leaf_values.get(id(leaf))
             if value is None:
-                value = leaf.terminal_value
+                value = float(leaf.solved) if leaf.solved else leaf.terminal_value
             elif not math.isfinite(value):
                 _warn_once(
                     f"non-finite leaf value ({value}) at fen={leaf.board.fen()!r}; using 0.0",
@@ -344,7 +420,30 @@ def run_mcts(
     return roots
 
 
+def forced_win_move(root):
+    forced = [
+        (child.terminal, child.visit_count, move)
+        for move, child in root.children.items()
+        if child.solved == -1
+    ]
+    if not forced:
+        return None
+    return max(forced, key=lambda entry: (entry[0], entry[1]))[2]
+
+
+def _one_hot_pairs(move, mover):
+    return {
+        (
+            canon_square(move.from_square, mover),
+            canon_square(move.to_square, mover),
+        ): 1.0
+    }
+
+
 def visit_policy_pairs(root, mover):
+    forced = forced_win_move(root)
+    if forced is not None:
+        return _one_hot_pairs(forced, mover)
     pairs = {}
     for move, prob in root.visit_distribution().items():
         key = (
@@ -356,6 +455,9 @@ def visit_policy_pairs(root, mover):
 
 
 def improved_policy_pairs(root, mover, beta):
+    forced = forced_win_move(root)
+    if forced is not None:
+        return _one_hot_pairs(forced, mover)
     if beta <= 0.0 or not root.children:
         return visit_policy_pairs(root, mover)
     moves = list(root.children)
@@ -392,9 +494,16 @@ def improved_policy_pairs(root, mover, beta):
 def choose_move(root, temperature):
     if not root.children:
         return None
-    moves = list(root.children.keys())
+
+    forced = forced_win_move(root)
+    if forced is not None:
+        return forced
+
+    moves = [move for move, child in root.children.items() if child.solved != 1]
+    if not moves:
+        moves = list(root.children)
     visits = np.array([root.children[m].visit_count for m in moves], dtype=np.float64)
-    if temperature <= 0:
+    if temperature <= 0 or visits.sum() <= 0:
         return moves[int(visits.argmax())]
     weights = visits ** (1.0 / temperature)
     weights = weights / weights.sum()
@@ -408,6 +517,7 @@ def mcts_policy_step(
     num_simulations=200,
     sims_per_wave=8,
     c_puct=1.5,
+    fpu_reduction=0.25,
     temperature=0.0,
     add_root_noise=False,
     root_dirichlet_alpha=0.3,
@@ -423,6 +533,7 @@ def mcts_policy_step(
         num_simulations=num_simulations,
         sims_per_wave=sims_per_wave,
         c_puct=c_puct,
+        fpu_reduction=fpu_reduction,
         add_root_noise=add_root_noise,
         root_dirichlet_alpha=root_dirichlet_alpha,
         root_noise_frac=root_noise_frac,
@@ -465,6 +576,7 @@ def mcts_move_with_visits(
         ),
         sims_per_wave=config.mcts_sims_per_wave,
         c_puct=config.mcts_c_puct,
+        fpu_reduction=config.mcts_fpu_reduction,
         temperature=temperature,
         add_root_noise=add_root_noise,
         target_batch_size=config.mcts_target_batch_size,

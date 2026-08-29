@@ -218,18 +218,19 @@ def position_label(
     }
 
 
-def _should_include_policy(ply, win_probs, sample_ply_ramp, max_win_prob, max_entropy):
-    if not win_probs or len(win_probs) < 2:
-        return False
-    best_wp = max(win_probs.values())
-    if best_wp > max_win_prob:
-        return False
-    total = sum(win_probs.values())
-    if total <= 0:
-        return False
-    probs = [wp / total for wp in win_probs.values()]
+def policy_target_entropy_ratio(scores):
+    total = sum(scores.values())
+    if total <= 0 or len(scores) < 2:
+        return 1.0
+    probs = [score / total for score in scores.values()]
     entropy = -sum(p * math.log(p) for p in probs if p > 1e-10)
-    if entropy > max_entropy:
+    return entropy / math.log(len(probs))
+
+
+def _should_include_policy(ply, scores, sample_ply_ramp, max_entropy_ratio):
+    if not scores or len(scores) < 2:
+        return False
+    if policy_target_entropy_ratio(scores) > max_entropy_ratio:
         return False
     keep_prob = 1.0 if sample_ply_ramp <= 0 else min(1.0, (ply + 1) / sample_ply_ramp)
     return random.random() < keep_prob
@@ -248,8 +249,7 @@ def generate_game(
     drive_temperature=0.3,
     node_cap=None,
     sample_ply_ramp=10,
-    max_sample_win_prob=0.85,
-    max_sample_entropy=1.5,
+    max_sample_entropy_ratio=0.97,
     sample_stability=3,
     sample_score_margin=25,
 ):
@@ -310,10 +310,9 @@ def generate_game(
                     legal_moves=legal_moves,
                     include_policy=_should_include_policy(
                         board.ply(),
-                        win_probs,
+                        scores,
                         sample_ply_ramp,
-                        max_sample_win_prob,
-                        max_sample_entropy,
+                        max_sample_entropy_ratio,
                     ),
                 )
             )
@@ -337,8 +336,7 @@ def worker_generate_games(
     drive_temperature=0.3,
     node_cap=None,
     sample_ply_ramp=10,
-    max_sample_win_prob=0.85,
-    max_sample_entropy=1.5,
+    max_sample_entropy_ratio=0.97,
     sample_stability=3,
     sample_score_margin=25,
 ):
@@ -359,8 +357,7 @@ def worker_generate_games(
                     drive_temperature,
                     node_cap,
                     sample_ply_ramp,
-                    max_sample_win_prob,
-                    max_sample_entropy,
+                    max_sample_entropy_ratio,
                     sample_stability,
                     sample_score_margin,
                 )
@@ -417,8 +414,7 @@ def generate_pretrain_data(config):
                 config.pretrain_drive_temperature,
                 config.pretrain_node_cap,
                 config.pretrain_sample_ply_ramp,
-                config.pretrain_max_sample_win_prob,
-                config.pretrain_max_sample_entropy,
+                config.pretrain_max_sample_entropy_ratio,
                 config.pretrain_sample_stability,
                 config.pretrain_sample_score_margin,
             )
