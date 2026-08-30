@@ -143,6 +143,8 @@ def generate_self_play_data(
     chunk = max(
         1, min(config.self_play_chunk_games, math.ceil(total_games / max_workers))
     )
+    if opening_moves_per_game is not None and chunk % 2:
+        chunk = max(2, chunk - 1)
     counts = [chunk] * (total_games // chunk) + (
         [total_games % chunk] if total_games % chunk else []
     )
@@ -244,7 +246,7 @@ def head_to_head_score(
         mcts_simulations=config.h2h_mcts_simulations,
         opponent_mcts_simulations=config.h2h_mcts_simulations,
         opening_moves_per_game=[
-            opening_moves_for_game(i, plies=6) for i in range(games)
+            opening_moves_for_game(i // 2, plies=6) for i in range(games)
         ],
     )
     if config.self_play_h2h_adjudicate and stats["unresolved_positions"]:

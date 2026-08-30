@@ -114,7 +114,7 @@ def play_level_games(
                 max_moves,
                 limit,
                 mcts_simulations=mcts_simulations,
-                opening_moves=opening_moves_for_game(i, opening_plies),
+                opening_moves=opening_moves_for_game(i // 2, opening_plies),
                 adjudication_depth=adjudication_depth,
             )
             for i in tqdm(range(num_games), desc=f"vs {label}", leave=False)

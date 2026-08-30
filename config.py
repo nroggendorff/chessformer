@@ -124,7 +124,7 @@ class Config:
 
     self_play_pretrain_mix: float = 0.25
     self_play_lr: float = 8e-5
-    self_play_promote_z: float = 1.5
+    self_play_promote_z: float = 0.7
     self_play_final_promote_z: float = 0.0
     self_play_promote_confirm: int = 2
     self_play_rollback_z: float = 1.5
@@ -139,13 +139,13 @@ class Config:
     self_play_anchor_prob: float = 0.25
     self_play_stockfish_prob: float = 0.15
     self_play_pool_update_interval: int = 25
-    self_play_h2h_games: int = 120
+    self_play_h2h_games: int = 240
 
     self_play_h2h_sample_moves: int = 6
 
     self_play_h2h_adjudicate: bool = True
     self_play_h2h_adjudication_margin: int = 150
-    self_play_h2h_opening_temperature: float = 1.0
+    self_play_h2h_opening_temperature: float = 0.7
 
     self_play_eval_count: int = 12
     self_play_elo_refresh_interval: int = 20
