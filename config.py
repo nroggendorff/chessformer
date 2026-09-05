@@ -26,7 +26,8 @@ def amp_dtype(device):
 
 def default_checkpoint_path():
     return os.path.join(
-        os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "chessformer.safetensors"
+        os.environ.get("CHESSFORMER_MODEL_DIR", "/app/model"),
+        "chessformer.safetensors",
     )
 
 
