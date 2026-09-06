@@ -16,12 +16,13 @@ from config import amp_dtype, build_scheduler, set_optimizer_lr
 from encoding import INPUT_SIZE
 from evaluation import (
     adjudicate_unresolved,
+    anchor_for_elo,
     binomial_z_score,
-    clamp_uci_elo,
+    configure_anchor,
     estimate_elo,
     opening_moves_for_game,
 )
-from model import ChessNet
+from model import ChessNet, save_checkpoint
 from self_play_game import play_games_batched
 from self_play_workers import (
     calibrate_self_play_workers,
@@ -91,6 +92,8 @@ def generate_self_play_data(
     opponent_model=None,
     opponent_state_dict=None,
     stockfish_engine=None,
+    stockfish_anchor=None,
+    stockfish_limit=None,
     stockfish_path=None,
     stockfish_movetime=0.1,
     add_root_noise=True,
@@ -127,7 +130,11 @@ def generate_self_play_data(
                 root_noise_frac=config.mcts_root_noise_frac,
                 opponent_model=opponent_model,
                 stockfish_engine=stockfish_engine,
+                stockfish_anchor=stockfish_anchor,
+                stockfish_limit=stockfish_limit,
                 stockfish_movetime=stockfish_movetime,
+                material_scale=config.self_play_material_scale,
+                material_value_weight=config.self_play_material_value_weight,
                 resign_threshold=config.self_play_resign_threshold,
                 resign_streak=config.self_play_resign_streak,
                 add_root_noise=add_root_noise,
@@ -175,7 +182,7 @@ def generate_self_play_data(
                 device.type,
                 opponent_state_dict,
                 stockfish_path,
-                config.self_play_stockfish_elo,
+                stockfish_anchor,
                 stockfish_movetime,
                 config.self_play_resign_threshold,
                 config.self_play_resign_streak,
@@ -190,6 +197,8 @@ def generate_self_play_data(
                 ),
                 config.self_play_target_beta,
                 config.mcts_fpu_reduction,
+                config.self_play_material_scale,
+                config.self_play_material_value_weight,
             )
             for i, (count, offset) in enumerate(zip(counts, offsets))
         ]
@@ -277,7 +286,16 @@ def head_to_head_score(
 
 
 def run_self_play(
-    model, train_model, opt, scaler, scheduler, replay, device, config, elo_state
+    model,
+    train_model,
+    opt,
+    scaler,
+    scheduler,
+    replay,
+    device,
+    config,
+    elo_state,
+    checkpoint_path=None,
 ):
     warmup_train_model(model, train_model, opt, scaler, config, device)
     gc.set_threshold(100000, 50, 50)
@@ -343,23 +361,24 @@ def run_self_play(
 
         pool = [elo_state["best_state"]]
         stockfish_engine = None
+        stockfish_limit = None
+        stockfish_anchor = None
         stockfish_available = config.self_play_stockfish_prob > 0
         if stockfish_available and not use_multiprocessing:
             try:
                 stockfish_engine = stack.enter_context(
                     chess.engine.SimpleEngine.popen_uci(config.stockfish_path)
                 )
-                stockfish_engine.configure(
-                    {
-                        "UCI_LimitStrength": True,
-                        "UCI_Elo": clamp_uci_elo(
-                            stockfish_engine, config.self_play_stockfish_elo
-                        ),
-                    }
-                )
             except (FileNotFoundError, chess.engine.EngineError) as error:
                 print(f"Stockfish self-play opponents disabled: {error}")
                 stockfish_available = False
+
+        def curriculum_anchor():
+            return anchor_for_elo(
+                config,
+                elo_state.get("elo_ema", config.elo_eval_anchor)
+                + config.self_play_opponent_elo_offset,
+            )
 
         pbar = tqdm(
             range(config.self_play_iterations),
@@ -395,6 +414,15 @@ def run_self_play(
             use_stockfish = (
                 stockfish_available and anchor_threshold <= roll < stockfish_threshold
             )
+            iter_anchor = curriculum_anchor() if use_stockfish else None
+            if iter_anchor is not None and not use_multiprocessing:
+                if iter_anchor != stockfish_anchor:
+                    stockfish_limit = (
+                        configure_anchor(stockfish_engine, iter_anchor)
+                        if iter_anchor["engine_prob"] > 0
+                        else None
+                    )
+                    stockfish_anchor = iter_anchor
             opponent_state = (
                 None
                 if roll < self_threshold or use_stockfish
@@ -421,7 +449,13 @@ def run_self_play(
                 executor=executor,
                 opponent_model=None if opponent_state is None else opponent_model,
                 opponent_state_dict=opponent_state,
-                stockfish_engine=stockfish_engine if use_stockfish else None,
+                stockfish_engine=(
+                    stockfish_engine
+                    if use_stockfish and iter_anchor["engine_prob"] > 0
+                    else None
+                ),
+                stockfish_anchor=iter_anchor,
+                stockfish_limit=stockfish_limit if use_stockfish else None,
                 stockfish_path=(
                     config.stockfish_path
                     if use_stockfish and use_multiprocessing
@@ -466,6 +500,8 @@ def run_self_play(
                         elo_state["best_state"] = {
                             k: v.cpu().clone() for k, v in model.state_dict().items()
                         }
+                        if checkpoint_path:
+                            save_checkpoint(model, checkpoint_path)
                         if (
                             it + 1 - last_elo_iter
                             >= config.self_play_elo_refresh_interval
@@ -509,6 +545,7 @@ def run_self_play(
 
                 if (
                     "elo_ema" in elo_state
+                    and not elo_state.get("last_censored", False)
                     and elo_state["elo_ema"]
                     < start_elo - config.self_play_elo_drop_rollback
                 ):
@@ -630,7 +667,6 @@ if __name__ == "__main__":
         save_optimizer_state,
         set_optimizer_lr,
     )
-    from model import save_checkpoint
     from dataset import DEFAULT_PATH, load_pretrain_dataset
     from replay_buffer import DualRingBuffer
 
@@ -684,7 +720,16 @@ if __name__ == "__main__":
         )
 
     run_self_play(
-        model, train_model, opt, scaler, scheduler, replay, device, config, {}
+        model,
+        train_model,
+        opt,
+        scaler,
+        scheduler,
+        replay,
+        device,
+        config,
+        {},
+        checkpoint_path=checkpoint_path,
     )
     save_checkpoint(model, checkpoint_path)
     save_optimizer_state(opt, scheduler, checkpoint_path, "self_play")

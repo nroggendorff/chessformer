@@ -1,9 +1,13 @@
+import math
+
 import chess
 import chess.engine
 import numpy as np
 import torch
 
+from data_generation import PIECE_VALUES
 from encoding import board_to_input, legal_moves_by_square_pair
+from evaluation import anchor_move
 from tree_search import (
     MCTSNode,
     choose_move,
@@ -25,6 +29,17 @@ def _bootstrap_timeout_values(boards, indices, model, device):
     )
     _, values, _ = model(board_inputs, value_only=True)
     return dict(zip(indices, values.float().cpu().tolist()))
+
+
+def material_balance(board, color):
+    return sum(
+        value
+        * (
+            len(board.pieces(piece_type, color))
+            - len(board.pieces(piece_type, not color))
+        )
+        for piece_type, value in PIECE_VALUES.items()
+    )
 
 
 def _advance_root(root, move, board):
@@ -57,7 +72,11 @@ def play_games_batched(
     root_noise_frac=0.25,
     opponent_model=None,
     stockfish_engine=None,
+    stockfish_anchor=None,
+    stockfish_limit=None,
     stockfish_movetime=0.1,
+    material_scale=0.0,
+    material_value_weight=0.5,
     resign_threshold=None,
     resign_streak=2,
     add_root_noise=True,
@@ -70,7 +89,7 @@ def play_games_batched(
     model.eval()
     if opponent_model is not None:
         opponent_model.eval()
-    self_play_mode = opponent_model is None and stockfish_engine is None
+    self_play_mode = opponent_model is None and stockfish_anchor is None
 
     boards = [chess.Board() for _ in range(num_games)]
     if opening_moves_per_game is not None:
@@ -167,12 +186,16 @@ def play_games_batched(
                 if game_over(board):
                     finished[i] = True
 
-        if opponent_idx and stockfish_engine is not None:
+        if opponent_idx and stockfish_anchor is not None:
             for i in opponent_idx:
                 board = boards[i]
-                move = stockfish_engine.play(
-                    board, chess.engine.Limit(time=stockfish_movetime)
-                ).move
+                move = anchor_move(
+                    stockfish_engine,
+                    stockfish_anchor,
+                    stockfish_limit,
+                    board,
+                    stockfish_movetime,
+                )
                 if move is None:
                     finished[i] = True
                     continue
@@ -215,7 +238,19 @@ def play_games_batched(
     timeout_idx = [
         i for i in range(num_games) if not resolved_flags[i] and trajectories[i]
     ]
-    timeout_values = _bootstrap_timeout_values(boards, timeout_idx, model, device)
+    timeout_values = (
+        {}
+        if material_scale > 0
+        else _bootstrap_timeout_values(boards, timeout_idx, model, device)
+    )
+    timeout_material = (
+        {
+            i: math.tanh(material_balance(boards[i], chess.WHITE) / material_scale)
+            for i in timeout_idx
+        }
+        if material_scale > 0
+        else {}
+    )
 
     samples, decisive, drawn = [], 0, 0
     for i in range(num_games):
@@ -235,9 +270,10 @@ def play_games_batched(
         value_weight = (
             (decisive_weight if decisive_game else 1.0)
             if resolved
-            else timeout_value_weight
+            else (material_value_weight if material_scale > 0 else timeout_value_weight)
         )
         bootstrap = timeout_values.get(i)
+        white_material = timeout_material.get(i)
         for step in trajectory:
             if resolved:
                 value_target = (
@@ -248,6 +284,10 @@ def play_games_batched(
                         if winner == step["turn"]
                         else -(1.0 - value_smoothing)
                     )
+                )
+            elif white_material is not None:
+                value_target = (
+                    white_material if step["turn"] == chess.WHITE else -white_material
                 )
             else:
                 value_target = bootstrap if step["turn"] == board.turn else -bootstrap

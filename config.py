@@ -102,6 +102,7 @@ class Config:
     pretrain_sample_score_margin: int = 25
 
     pretrain_epochs: int = 6
+    pretrain_checkpoint_interval: int = 5000
     pretrain_batch_size: int = 128
     pretrain_shuffle_pool: int = 262144
     pretrain_chunk_rows: int = 16384
@@ -116,6 +117,8 @@ class Config:
     self_play_gradient_steps: int = 64
     self_play_decisive_weight: float = 1.5
     self_play_timeout_value_weight: float = 0.1
+    self_play_material_scale: float = 5.0
+    self_play_material_value_weight: float = 0.2
     self_play_value_smoothing: float = 0.05
     self_play_entropy_coef: float = 0.0
 
@@ -152,10 +155,12 @@ class Config:
     self_play_elo_refresh_interval: int = 20
     self_play_max_workers: int | None = 8
     self_play_worker_max_tasks: int = 256
+    self_play_probe_max_moves: int = 24
+    self_play_worker_rss_headroom: float = 1.75
     self_play_chunk_games: int = 20
     self_play_memory_safety_margin_mb: float = 3072.0
     self_play_worker_vram_mb: float = 900.0
-    self_play_stockfish_elo: int = 1800
+    self_play_opponent_elo_offset: float = -100.0
     self_play_stockfish_movetime: float = 0.2
 
     population_size: int = 4
@@ -190,6 +195,9 @@ class Config:
     elo_eval_max_moves: int = 120
     elo_eval_movetime: float = 0.2
     elo_eval_adjudication_depth: int = 12
+    elo_eval_adjudication_margin: int = 150
+    elo_eval_anchor_step: int = 200
+    elo_eval_anchor_rungs: int = 3
     elo_eval_ema_alpha: float = 0.3
     elo_eval_recenter_margin: float = 150.0
 

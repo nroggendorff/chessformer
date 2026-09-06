@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import math
 import multiprocessing as mp
+import random
 
 import chess
 import chess.engine
@@ -10,7 +11,19 @@ import chess.engine
 from data_generation import pin_to_next_cpu
 from tree_search import game_over, game_result, mcts_policy_step
 
-ELO_EVAL_ANCHOR_SPREAD = (-200, 0, 200)
+WEAK_ANCHOR_LADDER = (
+    {"name": "random", "elo": -515, "engine_prob": 0.0},
+    {"name": "mix10", "elo": -240, "engine_prob": 0.10},
+    {"name": "mix25", "elo": -35, "engine_prob": 0.25},
+    {"name": "mix50", "elo": 350, "engine_prob": 0.50},
+    {"name": "mix75", "elo": 685, "engine_prob": 0.75},
+    {"name": "weak", "elo": 1160, "engine_prob": 1.0},
+)
+WEAK_ANCHOR_SKILL = 0
+WEAK_ANCHOR_NODES = 1
+UCI_ELO_MIN = 1320
+UCI_ELO_MAX = 3190
+
 EVAL_OPENING_LINES = (
     ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "e1g1", "f8c5"),
     ("d2d4", "d7d5", "c2c4", "e7e6", "b1c3", "g8f6", "c1g5", "f8e7"),
@@ -21,11 +34,47 @@ EVAL_OPENING_LINES = (
 )
 
 _EVAL_ENGINE = None
+_EVAL_ANCHOR = None
 
 
 def clamp_uci_elo(engine, elo):
     option = engine.options.get("UCI_Elo")
     return elo if option is None else max(option.min, min(option.max, elo))
+
+
+def anchor_ladder(config):
+    rungs = [dict(rung) for rung in WEAK_ANCHOR_LADDER]
+    elo = UCI_ELO_MIN
+    while elo <= UCI_ELO_MAX:
+        rungs.append(
+            {"name": f"sf{elo}", "elo": elo, "engine_prob": 1.0, "uci_elo": elo}
+        )
+        elo += config.elo_eval_anchor_step
+    return rungs
+
+
+def anchor_for_elo(config, target):
+    return min(anchor_ladder(config), key=lambda rung: abs(rung["elo"] - target))
+
+
+def configure_anchor(engine, anchor):
+    if "uci_elo" in anchor:
+        engine.configure(
+            {
+                "UCI_LimitStrength": True,
+                "UCI_Elo": clamp_uci_elo(engine, anchor["uci_elo"]),
+            }
+        )
+        return None
+    engine.configure({"UCI_LimitStrength": False, "Skill Level": WEAK_ANCHOR_SKILL})
+    return chess.engine.Limit(nodes=WEAK_ANCHOR_NODES)
+
+
+def anchor_move(engine, anchor, limit, board, movetime):
+    if engine is None or random.random() >= anchor["engine_prob"]:
+        legal = list(board.legal_moves)
+        return random.choice(legal) if legal else None
+    return engine.play(board, limit or chess.engine.Limit(time=movetime)).move
 
 
 def opening_moves_for_game(game_index, plies=None):
@@ -53,10 +102,11 @@ def binomial_z_score(wins, draws, games, baseline=0.5):
     return (score - baseline) / se
 
 
-def fit_rating(calibrated_results, lo=-3000.0, hi=4000.0, iters=80):
+def fit_rating(calibrated_results, lo=-4000.0, hi=4000.0, iters=80):
     if not calibrated_results:
         return None
 
+    prior_level = min(r["level"]["elo"] for r in calibrated_results)
     total_actual = sum(r["score"] for r in calibrated_results) + 0.5
 
     for _ in range(iters):
@@ -64,7 +114,7 @@ def fit_rating(calibrated_results, lo=-3000.0, hi=4000.0, iters=80):
         total_expected = sum(
             r["games"] * expected_score(mid, r["level"]["elo"])
             for r in calibrated_results
-        ) + (1.0 * expected_score(mid, mid))
+        ) + expected_score(mid, prior_level)
 
         if total_expected < total_actual:
             lo = mid
@@ -150,27 +200,24 @@ def _eval_worker_shutdown():
             pass
 
 
-def eval_worker_init(engine_path, elo, cpu_counter, cpu_lock):
-    global _EVAL_ENGINE
+def eval_worker_init(engine_path, anchor, cpu_counter, cpu_lock):
+    global _EVAL_ENGINE, _EVAL_ANCHOR
     pin_to_next_cpu(cpu_counter, cpu_lock)
+    _EVAL_ANCHOR = dict(anchor)
+    _EVAL_ANCHOR["limit"] = None
+    if anchor["engine_prob"] <= 0.0:
+        return
     _EVAL_ENGINE = chess.engine.SimpleEngine.popen_uci(engine_path)
-    _EVAL_ENGINE.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
+    _EVAL_ANCHOR["limit"] = configure_anchor(_EVAL_ENGINE, anchor)
     atexit.register(_eval_worker_shutdown)
 
 
 def eval_worker_play_move(fen, movetime):
-    return _EVAL_ENGINE.play(
-        chess.Board(fen), chess.engine.Limit(time=movetime)
-    ).move.uci()
-
-
-def eval_worker_timeout_score(fen, mover_is_white, depth=10):
-    cp = (
-        _EVAL_ENGINE.analyse(chess.Board(fen), chess.engine.Limit(depth=depth))["score"]
-        .pov(chess.WHITE if mover_is_white else chess.BLACK)
-        .score(mate_score=10000)
+    board = chess.Board(fen)
+    move = anchor_move(
+        _EVAL_ENGINE, _EVAL_ANCHOR, _EVAL_ANCHOR["limit"], board, movetime
     )
-    return 1.0 if cp > 150 else 0.0 if cp < -150 else 0.5
+    return None if move is None else move.uci()
 
 
 _ADJUDICATION_ENGINE = None
@@ -232,12 +279,20 @@ def play_all_anchor_games(
     mcts_simulations=None,
     random_opening_plies=0,
     adjudication_depth=10,
+    adjudication_margin=150,
 ):
     with chess.engine.SimpleEngine.popen_uci(engine_path) as probe_engine:
-        elos = [clamp_uci_elo(probe_engine, anchor) for anchor in anchors]
+        anchors = [
+            (
+                {**anchor, "elo": clamp_uci_elo(probe_engine, anchor["uci_elo"])}
+                if "uci_elo" in anchor
+                else dict(anchor)
+            )
+            for anchor in anchors
+        ]
 
     ctx = mp.get_context("spawn")
-    total_games = games_per_anchor * len(elos)
+    total_games = games_per_anchor * len(anchors)
     boards = [chess.Board() for _ in range(total_games)]
     model_is_white = [i % 2 == 0 for i in range(total_games)]
     anchor_of_game = [i // games_per_anchor for i in range(total_games)]
@@ -249,13 +304,15 @@ def play_all_anchor_games(
         pools = [
             stack.enter_context(
                 concurrent.futures.ProcessPoolExecutor(
-                    max_workers=min(max(1, max_workers // len(elos)), games_per_anchor),
+                    max_workers=min(
+                        max(1, max_workers // len(anchors)), games_per_anchor
+                    ),
                     mp_context=ctx,
                     initializer=eval_worker_init,
-                    initargs=(engine_path, elo, ctx.Value("i", 0), ctx.Lock()),
+                    initargs=(engine_path, anchor, ctx.Value("i", 0), ctx.Lock()),
                 )
             )
-            for elo in elos
+            for anchor in anchors
         ]
 
         for _ in range(max_moves):
@@ -268,7 +325,8 @@ def play_all_anchor_games(
                 for i in active
                 if boards[i].turn == (chess.WHITE if model_is_white[i] else chess.BLACK)
             ]
-            engine_idx = [i for i in active if i not in learner_idx]
+            learner_set = set(learner_idx)
+            engine_idx = [i for i in active if i not in learner_set]
 
             if learner_idx:
                 warm = [i for i in learner_idx if plies[i] < random_opening_plies]
@@ -306,47 +364,56 @@ def play_all_anchor_games(
                     for i in engine_idx
                 }
                 for i, future in futures.items():
-                    boards[i].push_uci(future.result())
+                    uci = future.result()
+                    if uci is None:
+                        finished[i] = True
+                        continue
+                    boards[i].push_uci(uci)
                     plies[i] += 1
                     if game_over(boards[i]):
                         finished[i] = True
 
-        outcomes = [game_result(board) for board in boards]
-        timeout_futures = {
-            i: pools[anchor_of_game[i]].submit(
-                eval_worker_timeout_score,
-                boards[i].fen(),
-                model_is_white[i],
+    outcomes = [game_result(board) for board in boards]
+    pending = [i for i, (done, _) in enumerate(outcomes) if not done]
+    adjudicated = dict(
+        zip(
+            pending,
+            adjudicate_unresolved(
+                engine_path,
+                [(boards[i].fen(), model_is_white[i]) for i in pending],
                 adjudication_depth,
-            )
-            for i, (finished, _) in enumerate(outcomes)
-            if not finished
-        }
+                adjudication_margin,
+                max_workers=max_workers,
+            ),
+        )
+    )
 
-        results = [
-            {"score": 0.0, "games": games_per_anchor, "level": {"elo": elo}}
-            for elo in elos
-        ]
-        for i, (finished, winner) in enumerate(outcomes):
-            mover = chess.WHITE if model_is_white[i] else chess.BLACK
-            score = (
-                (0.5 if winner is None else float(winner == mover))
-                if finished
-                else timeout_futures[i].result()
-            )
-            results[anchor_of_game[i]]["score"] += score
+    results = [
+        {"score": 0.0, "games": games_per_anchor, "level": anchor} for anchor in anchors
+    ]
+    for i, (done, winner) in enumerate(outcomes):
+        mover = chess.WHITE if model_is_white[i] else chess.BLACK
+        results[anchor_of_game[i]]["score"] += (
+            (0.5 if winner is None else float(winner == mover))
+            if done
+            else adjudicated[i]
+        )
 
     return results
 
 
 def adaptive_eval_anchors(config, state):
+    ladder = anchor_ladder(config)
     center = state.get("last_elo", state.get("elo_ema", config.elo_eval_anchor))
-    center = int(round(center / 50.0) * 50)
     pinned = state.get("anchor_center")
     if pinned is not None and abs(center - pinned) < config.elo_eval_recenter_margin:
         center = pinned
     state["anchor_center"] = center
-    return [center + spread for spread in ELO_EVAL_ANCHOR_SPREAD]
+
+    nearest = min(range(len(ladder)), key=lambda i: abs(ladder[i]["elo"] - center))
+    width = min(config.elo_eval_anchor_rungs, len(ladder))
+    start = max(0, min(nearest - width // 2, len(ladder) - width))
+    return ladder[start : start + width]
 
 
 def estimate_elo(model, device, config, state):
@@ -367,11 +434,15 @@ def estimate_elo(model, device, config, state):
         mcts_simulations=config.elo_eval_mcts_simulations,
         random_opening_plies=config.elo_eval_random_plies,
         adjudication_depth=config.elo_eval_adjudication_depth,
+        adjudication_margin=config.elo_eval_adjudication_margin,
     )
 
     elo = fit_rating(results)
     se = rating_standard_error(elo, results)
+    scored = sum(r["score"] for r in results)
+    played = sum(r["games"] for r in results)
 
+    state["last_censored"] = scored <= 0.0 or scored >= played
     state["elo_ema"] = (
         elo
         if "elo_ema" not in state

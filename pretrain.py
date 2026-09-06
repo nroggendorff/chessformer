@@ -2,7 +2,9 @@ import os
 
 from tqdm import tqdm
 
+from config import save_optimizer_state
 from evaluation import estimate_elo
+from model import save_checkpoint
 from training import train_batch
 
 
@@ -17,6 +19,7 @@ def run_pretraining(
     config,
     elo_state,
     total_steps,
+    checkpoint_path=None,
 ):
     if len(replay.pretrain_buf) < config.pretrain_batch_size:
         return
@@ -29,6 +32,10 @@ def run_pretraining(
             train_model, opt, scaler, batch, device
         )
         scheduler.step()
+
+        if checkpoint_path and (step + 1) % config.pretrain_checkpoint_interval == 0:
+            save_checkpoint(model, checkpoint_path)
+            save_optimizer_state(opt, scheduler, checkpoint_path, "pretrain")
 
         if (step + 1) % eval_interval == 0:
             estimate_elo(model, device, config, elo_state)
@@ -60,10 +67,8 @@ if __name__ == "__main__":
         get_device,
         load_optimizer_state,
         optimizer_state_path,
-        save_optimizer_state,
     )
     from dataset import DEFAULT_PATH, generate_pretrain_dataset, load_pretrain_dataset
-    from model import save_checkpoint
     from replay_buffer import DualRingBuffer
 
     config = Config()
@@ -125,6 +130,7 @@ if __name__ == "__main__":
         config,
         {},
         total_steps,
+        checkpoint_path=checkpoint_path,
     )
     save_checkpoint(model, checkpoint_path)
     save_optimizer_state(opt, scheduler, checkpoint_path, "pretrain")

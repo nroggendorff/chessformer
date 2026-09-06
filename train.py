@@ -26,7 +26,10 @@ def main():
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    model, train_model = build_model(config, device)
+    checkpoint_path = default_checkpoint_path()
+    if os.path.exists(checkpoint_path):
+        print(f"Resuming from {checkpoint_path}")
+    model, train_model = build_model(config, device, checkpoint_path)
     opt = build_optimizer(model, config)
     scaler = build_scaler(device)
     replay = DualRingBuffer(
@@ -63,7 +66,9 @@ def main():
         config,
         elo_state,
         pretrain_steps,
+        checkpoint_path=checkpoint_path,
     )
+    save_checkpoint(model, checkpoint_path)
 
     set_optimizer_lr(opt, config.self_play_lr)
     self_play_scheduler = build_scheduler(
@@ -79,9 +84,10 @@ def main():
         device,
         config,
         elo_state,
+        checkpoint_path=checkpoint_path,
     )
 
-    save_checkpoint(model, default_checkpoint_path())
+    save_checkpoint(model, checkpoint_path)
 
 
 if __name__ == "__main__":
