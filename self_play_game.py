@@ -11,6 +11,7 @@ from evaluation import anchor_move
 from tree_search import (
     MCTSNode,
     choose_move,
+    forced_win_move,
     game_over,
     game_result,
     improved_policy_pairs,
@@ -143,6 +144,7 @@ def play_games_batched(
                 )
 
                 if record_trajectory:
+                    proven_win = forced_win_move(root) is not None
                     policy_pairs = improved_policy_pairs(root, board.turn, target_beta)
                     trajectories[i].append(
                         {
@@ -162,7 +164,8 @@ def play_games_batched(
                                 list(policy_pairs.values()), dtype=np.float32
                             ),
                             "turn": board.turn,
-                            "include_policy": abs(root_q) < include_policy_q_threshold,
+                            "include_policy": proven_win
+                            or abs(root_q) < include_policy_q_threshold,
                         }
                     )
 
