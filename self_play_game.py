@@ -78,6 +78,7 @@ def play_games_batched(
     stockfish_movetime=0.1,
     material_scale=0.0,
     material_value_weight=0.5,
+    draw_material_weight=0.0,
     resign_threshold=None,
     resign_streak=2,
     add_root_noise=True,
@@ -254,6 +255,15 @@ def play_games_batched(
         if material_scale > 0
         else {}
     )
+    draw_material = (
+        {
+            i: math.tanh(material_balance(boards[i], chess.WHITE) / material_scale)
+            for i in range(num_games)
+            if resolved_flags[i] and winners[i] is None and trajectories[i]
+        }
+        if material_scale > 0 and draw_material_weight > 0
+        else {}
+    )
 
     samples, decisive, drawn = [], 0, 0
     for i in range(num_games):
@@ -278,15 +288,25 @@ def play_games_batched(
         bootstrap = timeout_values.get(i)
         white_material = timeout_material.get(i)
         for step in trajectory:
-            if resolved:
+            if resolved and winner is None:
+                drawn_material = draw_material.get(i)
                 value_target = (
                     0.0
-                    if winner is None
+                    if drawn_material is None
                     else float(
-                        (1.0 - value_smoothing)
-                        if winner == step["turn"]
-                        else -(1.0 - value_smoothing)
+                        draw_material_weight
+                        * (
+                            drawn_material
+                            if step["turn"] == chess.WHITE
+                            else -drawn_material
+                        )
                     )
+                )
+            elif resolved:
+                value_target = float(
+                    (1.0 - value_smoothing)
+                    if winner == step["turn"]
+                    else -(1.0 - value_smoothing)
                 )
             elif white_material is not None:
                 value_target = (

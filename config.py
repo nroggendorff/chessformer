@@ -111,7 +111,8 @@ class Config:
     self_play_games_per_iter: int = 32
     self_play_temperature: float = 1.0
     self_play_temperature_floor: float = 0.0
-    self_play_max_moves: int = 110
+    self_play_max_moves: int = 400
+    self_play_h2h_max_moves: int = 110
     self_play_sample_moves: int = 15
     self_play_batch_size: int = 128
     self_play_gradient_steps: int = 64
@@ -119,6 +120,7 @@ class Config:
     self_play_timeout_value_weight: float = 0.1
     self_play_material_scale: float = 5.0
     self_play_material_value_weight: float = 0.2
+    self_play_draw_material_weight: float = 0.0
     self_play_value_smoothing: float = 0.05
     self_play_entropy_coef: float = 0.0
 

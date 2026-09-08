@@ -208,6 +208,7 @@ def worker_play_games(
     fpu_reduction=0.25,
     material_scale=0.0,
     material_value_weight=0.5,
+    draw_material_weight=0.0,
 ):
     global _GLOBAL_MODEL
     assert _GLOBAL_MODEL
@@ -261,6 +262,7 @@ def worker_play_games(
             stockfish_movetime=stockfish_movetime,
             material_scale=material_scale,
             material_value_weight=material_value_weight,
+            draw_material_weight=draw_material_weight,
             resign_threshold=resign_threshold,
             resign_streak=resign_streak,
             add_root_noise=add_root_noise,

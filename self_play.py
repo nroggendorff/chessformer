@@ -135,6 +135,7 @@ def generate_self_play_data(
                 stockfish_movetime=stockfish_movetime,
                 material_scale=config.self_play_material_scale,
                 material_value_weight=config.self_play_material_value_weight,
+                draw_material_weight=config.self_play_draw_material_weight,
                 resign_threshold=config.self_play_resign_threshold,
                 resign_streak=config.self_play_resign_streak,
                 add_root_noise=add_root_noise,
@@ -199,6 +200,7 @@ def generate_self_play_data(
                 config.mcts_fpu_reduction,
                 config.self_play_material_scale,
                 config.self_play_material_value_weight,
+                config.self_play_draw_material_weight,
             )
             for i, (count, offset) in enumerate(zip(counts, offsets))
         ]
@@ -475,7 +477,7 @@ def run_self_play(
                     opponent_model,
                     elo_state["best_state"],
                     config.self_play_h2h_games,
-                    config.self_play_max_moves,
+                    config.self_play_h2h_max_moves,
                     device,
                     config,
                     use_multiprocessing,
@@ -627,7 +629,7 @@ def run_self_play(
             opponent_model,
             elo_state["best_state"],
             config.self_play_h2h_games * config.self_play_final_h2h_multiplier,
-            config.self_play_max_moves,
+            config.self_play_h2h_max_moves,
             device,
             config,
             use_multiprocessing,
