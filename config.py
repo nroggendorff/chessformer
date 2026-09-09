@@ -121,6 +121,10 @@ class Config:
     self_play_material_scale: float = 5.0
     self_play_material_value_weight: float = 0.2
     self_play_draw_material_weight: float = 0.0
+    self_play_scratch_material_value_weight: float = 0.6
+    self_play_scratch_draw_material_weight: float = 0.5
+    self_play_draw_material_anneal_decisive: float = 0.75
+    self_play_decisive_ema_alpha: float = 0.2
     self_play_value_smoothing: float = 0.05
     self_play_entropy_coef: float = 0.0
 

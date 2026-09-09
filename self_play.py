@@ -17,6 +17,7 @@ from encoding import INPUT_SIZE
 from evaluation import (
     adjudicate_unresolved,
     anchor_for_elo,
+    anchor_ladder,
     binomial_z_score,
     configure_anchor,
     estimate_elo,
@@ -98,6 +99,8 @@ def generate_self_play_data(
     stockfish_movetime=0.1,
     add_root_noise=True,
     value_smoothing=0.0,
+    material_value_weight=None,
+    draw_material_weight=None,
     record_trajectory=True,
     mcts_simulations=None,
     opponent_mcts_simulations=None,
@@ -107,6 +110,10 @@ def generate_self_play_data(
     opponent_mcts_simulations = (
         opponent_mcts_simulations or config.self_play_opponent_mcts_simulations
     )
+    if material_value_weight is None:
+        material_value_weight = config.self_play_material_value_weight
+    if draw_material_weight is None:
+        draw_material_weight = config.self_play_draw_material_weight
     if not use_multiprocessing:
         with torch.autocast(device_type=device.type, dtype=amp_dtype(device)):
             return play_games_batched(
@@ -134,8 +141,8 @@ def generate_self_play_data(
                 stockfish_limit=stockfish_limit,
                 stockfish_movetime=stockfish_movetime,
                 material_scale=config.self_play_material_scale,
-                material_value_weight=config.self_play_material_value_weight,
-                draw_material_weight=config.self_play_draw_material_weight,
+                material_value_weight=material_value_weight,
+                draw_material_weight=draw_material_weight,
                 resign_threshold=config.self_play_resign_threshold,
                 resign_streak=config.self_play_resign_streak,
                 add_root_noise=add_root_noise,
@@ -199,8 +206,8 @@ def generate_self_play_data(
                 config.self_play_target_beta,
                 config.mcts_fpu_reduction,
                 config.self_play_material_scale,
-                config.self_play_material_value_weight,
-                config.self_play_draw_material_weight,
+                material_value_weight,
+                draw_material_weight,
             )
             for i, (count, offset) in enumerate(zip(counts, offsets))
         ]
@@ -298,8 +305,19 @@ def run_self_play(
     config,
     elo_state,
     checkpoint_path=None,
+    from_scratch=False,
 ):
     warmup_train_model(model, train_model, opt, scaler, config, device)
+    material_value_weight = (
+        config.self_play_scratch_material_value_weight
+        if from_scratch
+        else config.self_play_material_value_weight
+    )
+    base_draw_material_weight = (
+        config.self_play_scratch_draw_material_weight
+        if from_scratch
+        else config.self_play_draw_material_weight
+    )
     gc.set_threshold(100000, 50, 50)
     use_multiprocessing = (config.self_play_max_workers or 1) > 1
     max_workers = (
@@ -319,6 +337,13 @@ def run_self_play(
             else "a single batched pass"
         )
     )
+    if from_scratch:
+        print(
+            "From-scratch shaping: material value weight "
+            f"{material_value_weight}, draw material weight "
+            f"{base_draw_material_weight} annealing to 0 as the decisive rate "
+            f"approaches {config.self_play_draw_material_anneal_decisive:.0%}"
+        )
 
     executor_cm = (
         concurrent.futures.ProcessPoolExecutor(
@@ -340,6 +365,8 @@ def run_self_play(
 
     with executor_cm as executor, contextlib.ExitStack() as stack:
         if "elo_ema" not in elo_state:
+            if from_scratch:
+                elo_state["last_elo"] = anchor_ladder(config)[0]["elo"]
             estimate_elo(model, device, config, elo_state)
 
         elo_state["best_state"] = {
@@ -393,6 +420,7 @@ def run_self_play(
         bad_evals = 0
         promote_streak = 0
         last_elo_iter = 0
+        decisive_ema = None
         start_elo = elo_state["elo_ema"]
 
         def rollback_to_best(it):
@@ -437,6 +465,14 @@ def run_self_play(
             if opponent_state is not None and not use_multiprocessing:
                 opponent_model.load_state_dict(opponent_state)
 
+            anneal_span = config.self_play_draw_material_anneal_decisive
+            draw_material_weight = (
+                base_draw_material_weight
+                if decisive_ema is None or anneal_span <= 0
+                else base_draw_material_weight
+                * max(0.0, 1.0 - decisive_ema / anneal_span)
+            )
+
             samples, sp_stats = generate_self_play_data(
                 model,
                 config.self_play_games_per_iter,
@@ -465,8 +501,17 @@ def run_self_play(
                 ),
                 stockfish_movetime=config.self_play_stockfish_movetime,
                 value_smoothing=config.self_play_value_smoothing,
+                material_value_weight=material_value_weight,
+                draw_material_weight=draw_material_weight,
             )
             replay.extend_rl(samples)
+            decisive_rate = sp_stats["decisive"] / max(1, sp_stats["games"])
+            decisive_ema = (
+                decisive_rate
+                if decisive_ema is None
+                else config.self_play_decisive_ema_alpha * decisive_rate
+                + (1 - config.self_play_decisive_ema_alpha) * decisive_ema
+            )
 
             if (it + 1) % config.self_play_pool_update_interval == 0:
                 add_to_pool(pool, model, config.self_play_pool_size)
@@ -732,6 +777,7 @@ if __name__ == "__main__":
         config,
         {},
         checkpoint_path=checkpoint_path,
+        from_scratch=not resuming,
     )
     save_checkpoint(model, checkpoint_path)
     save_optimizer_state(opt, scheduler, checkpoint_path, "self_play")
